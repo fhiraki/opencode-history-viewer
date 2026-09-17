@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenCode 履歴ビューワー</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">OpenCode 履歴ビューワー</div>
+  <div class="topsearch">
+    <input id="globalSearch" type="search" placeholder="全文検索（例: コメント率 / package.json）" aria-label="全文検索" />
+    <button type="button" id="globalSearchBtn">検索</button>
+  </div>
+  <nav class="tabs">
+    <button type="button" data-tab="sessions" class="active">セッション</button>
+    <button type="button" data-tab="search">検索</button>
+    <button type="button" data-tab="timeline">タイムライン</button>
+    <button type="button" data-tab="stats">統計</button>
+  </nav>
+</header>
+
+<main>
+  <section id="tab-sessions" class="tab active">
+    <div class="filters">
+      <select id="projectFilter"><option value="">すべてのプロジェクト</option></select>
+      <select id="sortSelect">
+        <option value="updated">更新が新しい順</option>
+        <option value="created">作成が新しい順</option>
+      </select>
+      <input id="sessionFilter" type="search" placeholder="タイトル・ディレクトリで絞り込み" />
+      <span id="sessionCount" class="muted"></span>
+    </div>
+    <div class="split">
+      <div class="list-pane">
+        <div id="sessionList" class="session-list"></div>
+        <div class="pager">
+          <button type="button" id="prevPage">← 前</button>
+          <span id="pageInfo" class="muted"></span>
+          <button type="button" id="nextPage">次 →</button>
+        </div>
+      </div>
+      <div class="detail-pane">
+        <div id="sessionDetail" class="detail"><p class="muted">左の一覧からセッションを選択してください。</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-search" class="tab">
+    <div class="filters">
+      <input id="searchInput" type="search" placeholder="本文・ツール出力から検索（スペース区切りでAND）" />
+      <button type="button" id="searchBtn">検索</button>
+      <span id="searchCount" class="muted"></span>
+    </div>
+    <div id="searchResults" class="results"></div>
+    <div class="pager">
+      <button type="button" id="searchPrev">← 前</button>
+      <span id="searchPageInfo" class="muted"></span>
+      <button type="button" id="searchNext">次 →</button>
+    </div>
+  </section>
+
+  <section id="tab-timeline" class="tab">
+    <div class="filters">
+      <span class="muted">日別に「いつ・どれだけ作業したか」を表示します。行をクリックするとその日のセッションに絞り込みます。</span>
+      <button type="button" id="timelineClear">絞り込み解除</button>
+    </div>
+    <div id="timeline" class="timeline"></div>
+  </section>
+
+  <section id="tab-stats" class="tab">
+    <div id="statsCards" class="cards"></div>
+    <h3>プロジェクト別</h3>
+    <div id="statsProjects"></div>
+    <h3>ツール利用 TOP</h3>
+    <div id="statsTools"></div>
+  </section>
+</main>
+
+<footer class="foot">
+  <span class="muted">ローカル動作・DBは読み取り専用で開きます（event テーブルは参照しません）。</span>
+</footer>
+
+<script src="/app.js" type="module"></script>
+</body>
+</html>
