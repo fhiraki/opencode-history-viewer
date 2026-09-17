@@ -16,7 +16,9 @@ import {
 
 describe("fmtTime", () => {
   it("formats ms epoch in en-US", () => {
-    assert.match(fmtTime(1789658023468), /^9\/18\/2026/);
+    // 固定 epoch はタイムゾーンで日付がずれるため、ローカル時刻で組み立てる
+    const ms = new Date(2026, 8, 18, 12, 0).getTime();
+    assert.match(fmtTime(ms), /^9\/18\/2026/);
   });
   it("returns - for missing values", () => {
     assert.equal(fmtTime(0), "-");
