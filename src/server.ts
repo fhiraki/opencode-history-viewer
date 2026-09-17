@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import {
   defaultDbPath,
@@ -11,7 +13,7 @@ import {
   listSessions,
   openDb,
   searchParts,
-} from "./db.js";
+} from "./db.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
@@ -19,7 +21,7 @@ const PUBLIC_DIR = path.join(__dirname, "..", "public");
 const PORT = Number(process.env.PORT || 8083);
 const DB_PATH = defaultDbPath();
 
-let db;
+let db: DatabaseSync;
 try {
   if (!fs.existsSync(DB_PATH)) {
     console.error(`[opencode-viewer] DB が見つかりません: ${DB_PATH}`);
@@ -29,11 +31,13 @@ try {
   db = openDb(DB_PATH);
   console.log(`[opencode-viewer] DB: ${DB_PATH} (read-only)`);
 } catch (e) {
-  console.error(`[opencode-viewer] DB オープン失敗: ${e.message}`);
+  console.error(
+    `[opencode-viewer] DB オープン失敗: ${e instanceof Error ? e.message : String(e)}`,
+  );
   process.exit(1);
 }
 
-const MIME = {
+const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -43,7 +47,7 @@ const MIME = {
   ".ico": "image/x-icon",
 };
 
-function sendJson(res, obj, status = 200) {
+function sendJson(res: http.ServerResponse, obj: unknown, status = 200): void {
   const body = JSON.stringify(obj);
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -53,7 +57,7 @@ function sendJson(res, obj, status = 200) {
   res.end(body);
 }
 
-function sendFile(res, filePath) {
+function sendFile(res: http.ServerResponse, filePath: string): void {
   fs.readFile(filePath, (err, data) => {
     if (err) {
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
@@ -69,8 +73,11 @@ function sendFile(res, filePath) {
   });
 }
 
-function parseQuery(url) {
-  const u = new URL(url, "http://localhost");
+function parseQuery(url: string | undefined): {
+  pathname: string;
+  params: URLSearchParams;
+} {
+  const u = new URL(url ?? "/", "http://localhost");
   return { pathname: u.pathname, params: u.searchParams };
 }
 
@@ -94,7 +101,7 @@ const server = http.createServer((req, res) => {
         to: Number(params.get("to") || 0),
         sort: params.get("sort") || "updated",
       });
-      return sendJson(res, result);
+      return sendJson(res, { ...result, home: os.homedir() });
     }
     if (req.method === "GET" && pathname.startsWith("/api/session/")) {
       const id = decodeURIComponent(pathname.slice("/api/session/".length));
@@ -110,7 +117,7 @@ const server = http.createServer((req, res) => {
         offset: Number(params.get("offset") || 0),
         project: params.get("project") || "",
       });
-      return sendJson(res, result);
+      return sendJson(res, { ...result, home: os.homedir() });
     }
     if (req.method === "GET" && pathname === "/api/timeline") {
       return sendJson(res, {
@@ -143,7 +150,7 @@ const server = http.createServer((req, res) => {
     res.end("Not Found");
   } catch (e) {
     console.error(`[api] ${pathname} error:`, e);
-    sendJson(res, { error: String(e.message || e) }, 500);
+    sendJson(res, { error: String(e instanceof Error ? e.message : e) }, 500);
   }
 });
 

@@ -4,17 +4,25 @@
   "description": "ローカル実行可能な OpenCode 履歴ビューワー（全文検索・タイムライン・統計）",
   "type": "module",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js",
-    "lint": "biome check src public",
-    "format": "biome check --write src public",
-    "check": "biome check src public && node --check src/server.js && node --check src/db.js && node --check public/app.js"
+    "start": "node dist/server.js",
+    "prestart": "npm run build",
+    "dev": "node scripts/build.mjs --watch & node --watch dist/server.js",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/",
+    "lint": "biome check src public test scripts",
+    "format": "biome check --write src public test scripts",
+    "check": "npm run lint && npm run typecheck && npm test"
   },
   "engines": {
-    "node": ">=22.5"
+    "node": ">=24"
   },
   "license": "MIT",
   "devDependencies": {
-    "@biomejs/biome": "^2.5.14"
+    "@biomejs/biome": "^2.5.14",
+    "@types/node": "^24.13.5",
+    "esbuild": "^0.28.2",
+    "highlight.js": "^11.12.0",
+    "typescript": "^7.0.2"
   }
 }

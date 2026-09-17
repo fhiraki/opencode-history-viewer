@@ -1,94 +1,102 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="en">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="color-scheme" content="dark" />
-<title>OpenCode 履歴ビューワー</title>
+<title>OpenCode History Viewer</title>
 <link rel="stylesheet" href="/style.css" />
+<link rel="stylesheet" href="/dist/app.css" />
 </head>
 <body>
 <header class="topbar">
   <div class="brand">
     <span class="brand-mark">
       <svg viewBox="0 0 16 16" role="img" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round">
-        <title>履歴</title>
+        <title>History</title>
         <circle cx="8" cy="8" r="6.2" />
         <path d="M8 4.6V8l2.4 1.6" />
       </svg>
     </span>
-    <span>OpenCode 履歴ビューワー<small>HISTORY VIEWER</small></span>
+    <span>OpenCode History Viewer</span>
   </div>
   <nav class="tabs">
     <span class="tabs-indicator" aria-hidden="true"></span>
-    <button type="button" data-tab="sessions" class="active">セッション</button>
-    <button type="button" data-tab="search">検索</button>
-    <button type="button" data-tab="timeline">タイムライン</button>
-    <button type="button" data-tab="stats">統計</button>
+    <button type="button" data-tab="sessions" class="active">Sessions</button>
+    <button type="button" data-tab="search">Search</button>
+    <button type="button" data-tab="timeline">Timeline</button>
+    <button type="button" data-tab="stats">Stats</button>
   </nav>
 </header>
 
 <main>
   <section id="tab-sessions" class="tab active">
     <div class="filters">
-      <select id="projectFilter"><option value="">すべてのプロジェクト</option></select>
+      <select id="projectFilter"><option value="">All projects</option></select>
       <select id="sortSelect">
-        <option value="updated">更新が新しい順</option>
-        <option value="created">作成が新しい順</option>
+        <option value="updated">Recently updated</option>
+        <option value="created">Recently created</option>
       </select>
-      <input id="sessionFilter" type="search" placeholder="タイトル・ディレクトリで絞り込み" />
+      <input id="sessionFilter" type="search" placeholder="Filter by title or directory" />
       <span id="sessionCount" class="muted"></span>
     </div>
     <div class="split">
       <div class="list-pane">
         <div id="sessionList" class="session-list"></div>
         <div class="pager">
-          <button type="button" id="prevPage">← 前</button>
+          <button type="button" id="prevPage">← Prev</button>
           <span id="pageInfo" class="muted"></span>
-          <button type="button" id="nextPage">次 →</button>
+          <button type="button" id="nextPage">Next →</button>
         </div>
       </div>
       <div class="detail-pane">
-        <div id="sessionDetail" class="detail"><p class="muted">左の一覧からセッションを選択してください。</p></div>
+        <div id="sessionDetail" class="detail"><p class="muted">Select a session from the list.</p></div>
+        <div class="msg-nav">
+          <button type="button" id="navUp" aria-label="Previous exchange" disabled><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10.5 8 6.5l4 4" /></svg></button>
+          <span id="navPos" class="muted"></span>
+          <button type="button" id="navDown" aria-label="Next exchange" disabled><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5 8 9.5l4-4" /></svg></button>
+        </div>
       </div>
     </div>
   </section>
 
   <section id="tab-search" class="tab">
     <div class="filters">
-      <input id="searchInput" type="search" placeholder="本文・ツール出力から検索（スペース区切りでAND）" />
-      <button type="button" id="searchBtn">検索</button>
+      <input id="searchInput" type="search" placeholder="Search message bodies and tool output (space-separated AND)" />
+      <button type="button" id="searchBtn">Search</button>
       <span id="searchCount" class="muted"></span>
     </div>
     <div id="searchResults" class="results"></div>
     <div class="pager">
-      <button type="button" id="searchPrev">← 前</button>
+      <button type="button" id="searchPrev">← Prev</button>
       <span id="searchPageInfo" class="muted"></span>
-      <button type="button" id="searchNext">次 →</button>
+      <button type="button" id="searchNext">Next →</button>
     </div>
   </section>
 
   <section id="tab-timeline" class="tab">
     <div class="filters">
-      <span class="muted">日別に「いつ・どれだけ作業したか」を表示します。行をクリックするとその日のセッションに絞り込みます。</span>
-      <button type="button" id="timelineClear">絞り込み解除</button>
+      <span class="muted">Daily activity: when and how much you worked. Click a row to filter sessions for that day.</span>
+      <button type="button" id="timelineClear">Clear filter</button>
     </div>
     <div id="timeline" class="timeline"></div>
   </section>
 
   <section id="tab-stats" class="tab">
     <div id="statsCards" class="cards"></div>
-    <h3>プロジェクト別</h3>
+    <h3>By project</h3>
     <div id="statsProjects"></div>
-    <h3>ツール利用 TOP</h3>
+    <h3>By model</h3>
+    <div id="statsModels"></div>
+    <h3>Top tools</h3>
     <div id="statsTools"></div>
   </section>
 </main>
 
 <footer class="foot">
-  <span class="muted">ローカル動作・DBは読み取り専用で開きます（event テーブルは参照しません）。</span>
+  <span class="muted">Runs locally · DB opened read-only (the event table is never queried).</span>
 </footer>
 
-<script src="/app.js" type="module"></script>
+<script src="/dist/app.js" type="module"></script>
 </body>
 </html>
