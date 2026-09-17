@@ -41,9 +41,9 @@ npm test           # node:test による単体テストのみ
 npm run build      # フロントバンドル (public/dist) とサーバー (dist) を生成
 ```
 
-- UI 文言は英語。コードブロックのハイライトは highlight.js（BSD-3-Clause）を使用
+- UI 文言は英語。本文の Markdown 描画は marked（MIT、GFM）を使用。コードブロックのハイライトは highlight.js（BSD-3-Clause）を使用
 - 構成: `src/server.ts`（API）・`src/db.ts`（SQLite 層）・`src/client/`（UI）・`src/shared/`（純粋関数）・`test/`（単体テスト）
-- ライセンスがいずれも permissive なもののみ使用: TypeScript（Apache-2.0）、esbuild（MIT）、highlight.js（BSD-3-Clause）、@types/node（MIT）、Biome（MIT）
+- ライセンスがいずれも permissive なもののみ使用: TypeScript（Apache-2.0）、esbuild（MIT）、highlight.js（BSD-3-Clause）、marked（MIT）、@types/node（MIT）、Biome（MIT）
 
 ## 機能
 

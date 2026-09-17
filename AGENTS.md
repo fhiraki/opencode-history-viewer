@@ -5,7 +5,7 @@
 - `src/db.ts` … SQLite アクセス層（全クエリはここ）
 - `src/client/` … UI（`app.ts` + `highlight.ts`）。esbuild で `public/dist/` にバンドル
 - `src/shared/` … DOM 非依存の純粋関数（整形系）。`test/` から直接 import される
-- `public/` … `index.html` + `style.css`（手書き、CDN 不使用）
+- `public/` … `index.html` + `style.css`（手書き）
 - `public/dist/` と `dist/` はビルド成果物で編集禁止。修正は必ず `src/` 側に行う
 
 ## コマンド
@@ -41,6 +41,6 @@
 
 ## UI（`public/`）
 - UI 文言は英語に統一（DB 由来のセッション内容を除く）。数値表示はコンパクト表記（`fmtCount`: k/M/B）。正確値は `title` 属性に `fmtExact`（`en-US` 3 桁区切り）で保持する
-- CDN 禁止（オフライン動作）。シンタックスハイライトは highlight.js（必要言語のみ `highlight.ts` で登録＋esbuild バンドル）のみで行い、別ライブラリを追加しない
+- シンタックスハイライトは highlight.js（必要言語のみ `highlight.ts` で登録＋esbuild バンドル）。Markdown 描画は marked（GFM）＋自前の安全化（生 HTML 無効化・URL スキーム制限・コード描画は `highlightTokens`）。外部ライブラリ・CDN の利用可
 - タブのスライド式インジケーターは JS で位置計算（`moveTabIndicator`）＋ CSS transition。`resize` と `document.fonts.ready` でも再計算する
 - ページ送りボタンは対象ページがない場合 `disabled` にする（セッション一覧・検索結果とも）。`button:disabled` のスタイルは `style.css` に定義済み

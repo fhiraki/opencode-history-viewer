@@ -338,7 +338,7 @@ function renderPart(p: ApiPart, terms: string[]): string {
   if (p.type === "text" || p.type === "reasoning") {
     if (p.type === "reasoning") {
       if (!(p.text || "").trim()) return "";
-      return `<details class="part"><summary>Reasoning (click to expand)</summary><div class="part-body">${renderProse(p.text || "", terms)}</div></details>`;
+      return `<details class="part"><summary>Reasoning (click to expand)</summary><div class="part-body prose">${renderProse(p.text || "", terms)}</div></details>`;
     }
     return `<div class="part"><div class="part-body prose">${renderProse(p.text || "", terms)}${p.truncated ? `<div class="muted">… (${Number(p.fullLength || 0).toLocaleString("en-US")} chars total, truncated)</div>` : ""}</div></div>`;
   }

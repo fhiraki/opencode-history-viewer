@@ -20,6 +20,7 @@ import swift from "highlight.js/lib/languages/swift";
 import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
+import { marked } from "marked";
 import { esc } from "../shared/format.ts";
 
 for (const [id, def] of Object.entries({
@@ -200,33 +201,62 @@ export function markTermsHtml(html: string, terms: string[]): string {
     .join("");
 }
 
-function renderInlineCode(escapedHtml: string): string {
-  return escapedHtml.replace(/`([^`\n]+)`/g, '<code class="ic">$1</code>');
+// ---------- Markdown 描画（marked + 自前の安全化） ----------
+// パースは marked（GFM）に任せ、XSS 対策として (1) 生 HTML は esc して無効化、
+// (2) リンク先は mdSanitizeUrl で危険スキームを拒否、
+// (3) コードブロックは従来通り highlightTokens で描画する。
+// marked の既定出力タグ（見出し・強調・リスト・引用・表など）は構造由来の
+// 安全なものに限られる。画像は外部取得を避けてリンク表示にする。
+marked.use({
+  breaks: true,
+  gfm: true,
+  renderer: {
+    code({ text, lang }) {
+      const language = normalizeLang((lang || "").trim().toLowerCase(), text);
+      const label = language === "plaintext" ? "TEXT" : language.toUpperCase();
+      return `<div class="codeblock"><div class="codelang">${esc(label)}</div><pre><code class="hljs language-${esc(language)}">${highlightTokens(text, language)}</code></pre></div>`;
+    },
+    codespan({ text }) {
+      return `<code class="ic">${esc(text)}</code>`;
+    },
+    html({ text }) {
+      return esc(text);
+    },
+    link({ href, tokens }) {
+      const safe = mdSanitizeUrl(href);
+      const label = this.parser.parseInline(tokens ?? []);
+      return safe
+        ? `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer">${label || esc(safe)}</a>`
+        : label;
+    },
+    image({ href, tokens }) {
+      const safe = mdSanitizeUrl(href);
+      const label = this.parser.parseInline(tokens ?? []);
+      return safe
+        ? `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer">${label || esc(safe)}</a>`
+        : label;
+    },
+  },
+});
+
+/** URL をリンク化してよいか判定する（生文字列を受け取り、埋め込み時に esc する） */
+function mdSanitizeUrl(url: string): string | null {
+  const u = url.trim();
+  if (!u || /[\s<>]/.test(u)) return null;
+  const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(u);
+  if (scheme) {
+    const s = scheme[1].toLowerCase();
+    if (s !== "http" && s !== "https" && s !== "mailto") return null;
+  }
+  return u;
 }
 
 export function renderProse(text: string, terms: string[]): string {
-  // 呼び出しごとに正規表現を生成する（モジュール共有の /g は lastIndex の競合を招く）
-  const fenceRe = /```([^\n]*)\n([\s\S]*?)(?:\n```|```|$)/g;
-  let html = "";
-  let last = 0;
-  let m = fenceRe.exec(text);
-  while (m !== null) {
-    if (m.index > last) {
-      html += renderInlineCode(esc(text.slice(last, m.index)));
-    }
-    const code = m[2].replace(/\n$/, "");
-    if (!code) {
-      html += renderInlineCode(esc(m[0]));
-    } else {
-      const lang = normalizeLang((m[1] || "").trim().toLowerCase(), code);
-      const label = lang === "plaintext" ? "TEXT" : lang.toUpperCase();
-      html += `<div class="codeblock"><div class="codelang">${esc(label)}</div><pre><code class="hljs language-${esc(lang)}">${highlightTokens(code, lang)}</code></pre></div>`;
-    }
-    last = m.index + m[0].length;
-    m = fenceRe.exec(text);
-  }
-  if (last < text.length) {
-    html += renderInlineCode(esc(text.slice(last)));
+  let html: string;
+  try {
+    html = marked.parse(text, { breaks: true, gfm: true }) as string;
+  } catch {
+    html = esc(text);
   }
   return markTermsHtml(html, terms);
 }

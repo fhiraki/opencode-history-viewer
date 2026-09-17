@@ -70,6 +70,66 @@ describe("renderProse", () => {
   });
 });
 
+describe("renderProse markdown", () => {
+  it("renders headings and paragraphs", () => {
+    assert.equal(renderProse("## Title", []).includes("<h2>Title</h2>"), true);
+    assert.equal(renderProse("a\nb", []).includes("<p>a<br>b</p>"), true);
+  });
+  it("leaves hash-tags without space as text", () => {
+    assert.equal(renderProse("#tag", []).includes("<p>#tag</p>"), true);
+  });
+  it("renders bold, italic and strikethrough", () => {
+    const out = renderProse("**b** *i* ~~s~~", []);
+    assert.match(out, /<strong>b<\/strong>/);
+    assert.match(out, /<em>i<\/em>/);
+    assert.match(out, /<del>s<\/del>/);
+  });
+  it("does not emphasize inside words with underscores", () => {
+    assert.equal(renderProse("foo_bar_baz", []).includes("<em>"), false);
+  });
+  it("renders links and blocks unsafe schemes", () => {
+    const safe = renderProse("[text](https://example.com)", []);
+    assert.match(
+      safe,
+      /<a href="https:\/\/example\.com" target="_blank" rel="noopener noreferrer">text<\/a>/,
+    );
+    const evil = renderProse("[x](javascript:alert(1))", []);
+    assert.equal(evil.includes("<a"), false);
+    assert.match(evil, /<p>x<\/p>/);
+  });
+  it("renders images as links without fetching", () => {
+    const out = renderProse("![alt](https://example.com/i.png)", []);
+    assert.equal(out.includes("<img"), false);
+    assert.match(out, /<a href="https:\/\/example\.com\/i\.png"/);
+  });
+  it("renders unordered, ordered and task lists", () => {
+    const ul = renderProse("- a\n- b", []);
+    assert.match(ul, /<ul>\s*<li>a<\/li>\s*<li>b<\/li>\s*<\/ul>/);
+    const ol = renderProse("1. a\n2. b", []);
+    assert.match(ol, /<ol>\s*<li>a<\/li>\s*<li>b<\/li>\s*<\/ol>/);
+    const task = renderProse("- [ ] t\n- [x] d", []);
+    assert.match(task, /<input disabled="" type="checkbox">/);
+    assert.match(task, /<input checked="" disabled="" type="checkbox">/);
+  });
+  it("renders blockquotes, rules and tables", () => {
+    assert.equal(renderProse("> quoted", []).includes("<blockquote>"), true);
+    assert.equal(renderProse("a\n\n---\n\nb", []).includes("<hr>"), true);
+    const table = renderProse("| a | b |\n| --- | ---: |\n| 1 | 2 |", []);
+    assert.match(table, /<table>/);
+    assert.match(table, /<th>a<\/th>/);
+    assert.match(table, /align="right"/);
+  });
+  it("escapes raw HTML to prevent XSS", () => {
+    const out = renderProse("<script>alert(1)</script>", []);
+    assert.equal(out.includes("<script>"), false);
+    assert.match(out, /&lt;script&gt;/);
+  });
+  it("keeps markdown markers inside code spans literal", () => {
+    const out = renderProse("`**not bold**`", []);
+    assert.match(out, /<code class="ic">\*\*not bold\*\*<\/code>/);
+  });
+});
+
 describe("toolOutputLang", () => {
   it("detects language from filePath for file tools", () => {
     assert.equal(

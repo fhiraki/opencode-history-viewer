@@ -524,6 +524,7 @@ main {
   font-family: var(--font-sans);
   font-size: 13.5px;
   line-height: 1.85;
+  white-space: normal;
 }
 
 /* ---------- コードブロック＋シンタックスハイライト ---------- */
@@ -827,4 +828,101 @@ tbody tr:hover td {
     animation: none;
     transition: none;
   }
+}
+
+/* ---------- Markdown 描画（.prose 内要素。汎用 table/th 規則より後置） ---------- */
+.prose > :first-child {
+  margin-top: 0;
+}
+.prose > :last-child {
+  margin-bottom: 0;
+}
+.prose p {
+  margin: 0 0 8px;
+}
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4,
+.prose h5,
+.prose h6 {
+  margin: 14px 0 6px;
+  line-height: 1.4;
+  font-weight: 700;
+}
+.prose h1 {
+  font-size: 17px;
+}
+.prose h2 {
+  font-size: 15.5px;
+}
+.prose h3 {
+  font-size: 14px;
+}
+.prose h4,
+.prose h5,
+.prose h6 {
+  font-size: 13.5px;
+}
+.prose ul,
+.prose ol {
+  margin: 6px 0 8px;
+  padding-left: 22px;
+}
+.prose li {
+  margin: 2px 0;
+}
+.prose li > ul,
+.prose li > ol {
+  margin: 2px 0;
+}
+.prose blockquote {
+  margin: 8px 0;
+  padding: 6px 12px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: rgba(91, 157, 255, 0.07);
+  color: var(--muted);
+}
+.prose blockquote p {
+  margin: 4px 0;
+}
+.prose a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.prose hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 12px 0;
+}
+.prose del {
+  color: var(--muted);
+}
+.prose input[type="checkbox"] {
+  accent-color: var(--accent);
+  margin-right: 6px;
+  vertical-align: baseline;
+}
+.prose .md-table-wrap {
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.prose table {
+  border-collapse: collapse;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.prose .md-table-wrap th,
+.prose .md-table-wrap td {
+  border: 1px solid var(--border-soft);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.prose .md-table-wrap th {
+  background: rgba(255, 255, 255, 0.04);
+  font-weight: 700;
 }
