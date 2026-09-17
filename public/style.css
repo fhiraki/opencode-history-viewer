@@ -49,15 +49,6 @@ button {
   font-weight: 700;
   white-space: nowrap;
 }
-.topsearch {
-  display: flex;
-  gap: 6px;
-  flex: 1;
-  min-width: 220px;
-}
-.topsearch input {
-  flex: 1;
-}
 button:hover {
   border-color: var(--accent);
 }

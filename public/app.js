@@ -269,19 +269,6 @@ $("searchNext").addEventListener("click", () => {
   if (state.searchOffset + 50 < state.searchTotal) state.searchOffset += 50;
   loadSearch();
 });
-$("globalSearch").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
-    $("searchInput").value = e.target.value;
-    switchTab("search");
-    runSearch();
-  }
-});
-$("globalSearchBtn").addEventListener("click", () => {
-  $("searchInput").value = $("globalSearch").value;
-  switchTab("search");
-  runSearch();
-});
-
 // ---------- タイムライン ----------
 async function loadTimeline() {
   const el = $("timeline");
