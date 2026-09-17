@@ -7,6 +7,7 @@ export interface ModelInfo {
 export function fmtTime(ms: number): string {
   if (!ms) return "-";
   const d = new Date(Number(ms));
+  if (Number.isNaN(d.getTime())) return "-";
   return d.toLocaleString("en-US", { hourCycle: "h23" });
 }
 

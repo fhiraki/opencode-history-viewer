@@ -139,6 +139,8 @@ function isSupported(canonical: string): boolean {
 }
 
 export function highlightTokens(raw: string, lang: string): string {
+  // 巨大入力のハイライトは UI を固まらせるためプレーン表示に退避する
+  if (raw.length > 20000) return esc(raw);
   if (lang === "plaintext" || !isSupported(lang)) return esc(raw);
   try {
     return hljs.highlight(raw, { language: hljsId(lang) }).value;
@@ -156,6 +158,8 @@ export function normalizeLang(info: string, code: string): string {
     return "plaintext";
   }
   const trimmed = code.trim();
+  // 巨大コードの自動判定はスキップする（JSON.parse / 行分割のコスト回避）
+  if (trimmed.length > 50000) return "plaintext";
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
     try {
       JSON.parse(trimmed);
@@ -179,7 +183,10 @@ function escapeRegExp(s: string): string {
 
 // ハイライト済み HTML のタグ部分を避けて検索語だけ <mark> 化する
 export function markTermsHtml(html: string, terms: string[]): string {
-  const clean = [...new Set(terms.filter(Boolean))].slice(0, 8);
+  // 長大な検索語は正規表現の爆発を招くため切り詰める
+  const clean = [
+    ...new Set(terms.filter(Boolean).map((t) => t.slice(0, 100))),
+  ].slice(0, 8);
   if (!clean.length) return html;
   const pattern = new RegExp(
     `(${clean.map((t) => escapeRegExp(esc(t))).join("|")})`,
@@ -193,16 +200,16 @@ export function markTermsHtml(html: string, terms: string[]): string {
     .join("");
 }
 
-const FENCE_RE = /```([^\n]*)\n([\s\S]*?)(?:\n```|```|$)/g;
 function renderInlineCode(escapedHtml: string): string {
   return escapedHtml.replace(/`([^`\n]+)`/g, '<code class="ic">$1</code>');
 }
 
 export function renderProse(text: string, terms: string[]): string {
-  FENCE_RE.lastIndex = 0;
+  // 呼び出しごとに正規表現を生成する（モジュール共有の /g は lastIndex の競合を招く）
+  const fenceRe = /```([^\n]*)\n([\s\S]*?)(?:\n```|```|$)/g;
   let html = "";
   let last = 0;
-  let m = FENCE_RE.exec(text);
+  let m = fenceRe.exec(text);
   while (m !== null) {
     if (m.index > last) {
       html += renderInlineCode(esc(text.slice(last, m.index)));
@@ -216,7 +223,7 @@ export function renderProse(text: string, terms: string[]): string {
       html += `<div class="codeblock"><div class="codelang">${esc(label)}</div><pre><code class="hljs language-${esc(lang)}">${highlightTokens(code, lang)}</code></pre></div>`;
     }
     last = m.index + m[0].length;
-    m = FENCE_RE.exec(text);
+    m = fenceRe.exec(text);
   }
   if (last < text.length) {
     html += renderInlineCode(esc(text.slice(last)));
@@ -241,7 +248,7 @@ export function toolOutputLang(p: ToolPartLike): string {
         ? (input as Record<string, unknown>).filePath
         : "";
     const base =
-      typeof filePath === "string" ? filePath.split("/").pop() || "" : "";
+      typeof filePath === "string" ? filePath.split(/[\\/]/).pop() || "" : "";
     const dot = base.lastIndexOf(".");
     const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
     return (ext && EXT_TO_LANG[ext]) || "plaintext";

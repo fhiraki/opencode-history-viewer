@@ -79,7 +79,7 @@ export function partDisplayText(partJson: unknown): string {
   if (t === "tool") {
     const st = (p.state ?? {}) as JsonObj;
     const meta = (st.metadata ?? {}) as JsonObj;
-    const input = st.input ? JSON.stringify(st.input, null, 1) : "";
+    const input = st.input ? JSON.stringify(st.input) : "";
     const title = p.title || st.title || "";
     const out = st.output || meta.output || "";
     return [title, input, typeof out === "string" ? out : JSON.stringify(out)]
@@ -108,9 +108,10 @@ export function listProjects(db: DatabaseSync): Row[] {
   const rows = db
     .prepare(
       `SELECT p.id, p.worktree, p.name,
-        (SELECT COUNT(*) FROM session s WHERE s.project_id = p.id) AS sessionCount,
-        (SELECT MAX(s.time_updated) FROM session s WHERE s.project_id = p.id) AS lastActive
-       FROM project p ORDER BY lastActive DESC NULLS LAST`,
+        COUNT(s.id) AS sessionCount,
+        MAX(s.time_updated) AS lastActive
+       FROM project p LEFT JOIN session s ON s.project_id = p.id
+       GROUP BY p.id ORDER BY lastActive DESC`,
     )
     .all();
   return rows;
@@ -172,34 +173,37 @@ export function listSessions(
     .all(...params, Number(limit), Number(offset));
 
   // プレビュー: 各セッションの最初の user text（なければ最初の text）
+  // 全セッション一括の ORDER BY + LIMIT では先頭セッションに枠を奪われるため、
+  // session_id の索引が効く per-session クエリ（各最大10件）に分割する。
+  // substr(p.data,1,N) を JSON.parse すると切断位置で壊れるため、
+  // json_extract で text/role だけ抜き出してから substr する。
   if (sessions.length) {
-    const ids = sessions.map((s) => String(s.id));
-    const placeholders = ids.map(() => "?").join(",");
-    const previewRows = db
-      .prepare(
-        `SELECT p.session_id, m.data AS mdata, substr(p.data, 1, 2000) AS pdata, p.time_created
-         FROM part p JOIN message m ON m.id = p.message_id
-         WHERE p.session_id IN (${placeholders})
-           AND json_extract(p.data, '$.type') = 'text'
-         ORDER BY p.time_created ASC LIMIT 500`,
-      )
-      .all(...ids);
-    const firstBySession = new Map();
-    const fallbackBySession = new Map();
-    for (const r of previewRows) {
-      const m = parseJsonSafe(r.mdata, {} as JsonObj);
-      const p = parseJsonSafe(r.pdata, {} as JsonObj);
-      const text = typeof p.text === "string" ? p.text.slice(0, 200) : "";
-      if (!text) continue;
-      if (!fallbackBySession.has(r.session_id)) {
-        fallbackBySession.set(r.session_id, text);
-      }
-      if (m.role === "user" && !firstBySession.has(r.session_id)) {
-        firstBySession.set(r.session_id, text);
-      }
-    }
+    const previewStmt = db.prepare(
+      `SELECT json_extract(m.data, '$.role') AS role,
+        substr(json_extract(p.data, '$.text'), 1, 200) AS text
+       FROM part p JOIN message m ON m.id = p.message_id
+       WHERE p.session_id = ? AND json_extract(p.data, '$.type') = 'text'
+       ORDER BY p.time_created ASC LIMIT 10`,
+    );
     for (const s of sessions) {
-      s.preview = firstBySession.get(s.id) || fallbackBySession.get(s.id) || "";
+      const sid = String(s.id);
+      let fallback = "";
+      let firstUser = "";
+      try {
+        const rows = previewStmt.all(sid);
+        for (const r of rows) {
+          const text = typeof r.text === "string" ? r.text : "";
+          if (!text) continue;
+          if (!fallback) fallback = text;
+          if (r.role === "user") {
+            firstUser = text;
+            break;
+          }
+        }
+      } catch {
+        // プレビュー失敗は一覧自体を壊さない（空文字のまま）
+      }
+      s.preview = firstUser || fallback || "";
     }
   }
   return { total, sessions };
@@ -346,7 +350,15 @@ export function searchParts(
   const total = (db.prepare(countSql).get(...params)?.c as number) ?? 0;
 
   const sql = `SELECT p.session_id, p.message_id, p.id AS part_id, p.time_created,
-      substr(p.data, 1, 12000) AS pdata, s.title AS session_title, s.directory, s.project_id
+      json_extract(p.data, '$.type') AS ptype,
+      json_extract(p.data, '$.tool') AS ptool,
+      COALESCE(json_extract(p.data, '$.title'), json_extract(p.data, '$.state.title')) AS ptitle,
+      substr(json_extract(p.data, '$.text'), 1, 8000) AS t_text,
+      substr(json_extract(p.data, '$.state.input'), 1, 4000) AS t_input,
+      substr(json_extract(p.data, '$.state.output'), 1, 8000) AS t_output,
+      substr(json_extract(p.data, '$.state.metadata.output'), 1, 8000) AS t_metaout,
+      substr(json_extract(p.data, '$.files'), 1, 2000) AS t_files,
+      s.title AS session_title, s.directory, s.project_id
     FROM part p JOIN session s ON s.id = p.session_id
     WHERE ${likeConds} ${projCond}
       AND json_extract(p.data, '$.type') IN ('text','tool','reasoning','patch')
@@ -355,28 +367,24 @@ export function searchParts(
 
   const lowerTerms = terms.map((t) => t.toLowerCase());
   const hits = rows.map((r) => {
-    const pj = parseJsonSafe(r.pdata, { type: "unknown" } as PartRaw);
-    const full = partDisplayText(
-      pj.type === "tool" ? { ...pj, state: pj.state } : pj,
-    );
-    // パース時に切り詰めた pdata(12k) 内でスニペット生成
-    const snippet = makeSnippet(full, lowerTerms);
-    let toolName: string | null = null;
-    let title: string | null = null;
-    if (pj.type === "tool") {
-      toolName = typeof pj.tool === "string" ? pj.tool : null;
-      const pjTitle = pj.title;
-      const stTitle =
-        typeof pj.state === "object" && pj.state !== null
-          ? (pj.state as Record<string, unknown>).title
-          : undefined;
-      title =
-        typeof pjTitle === "string"
-          ? pjTitle
-          : typeof stTitle === "string"
-            ? stTitle
-            : null;
+    // substr(p.data,1,N) を JSON.parse すると切断で壊れるため、
+    // SQL 側で json_extract＋substr 済みの断片からスニペット源を組み立てる
+    const ptype = typeof r.ptype === "string" ? r.ptype : "unknown";
+    const ptool = typeof r.ptool === "string" ? r.ptool : null;
+    const ptitle = typeof r.ptitle === "string" ? r.ptitle : null;
+    const str = (v: unknown): string => (typeof v === "string" ? v : "");
+    let full = "";
+    if (ptype === "text" || ptype === "reasoning") {
+      full = str(r.t_text);
+    } else if (ptype === "tool") {
+      full = [ptitle || "", str(r.t_input), str(r.t_output) || str(r.t_metaout)]
+        .filter(Boolean)
+        .join("\n");
+    } else if (ptype === "patch") {
+      full = str(r.t_files) ? `patch ${str(r.t_files)}` : "patch";
     }
+    // パース済み断片内でスニペット生成
+    const snippet = makeSnippet(full, lowerTerms);
     return {
       session_id: r.session_id,
       session_title: r.session_title,
@@ -384,9 +392,9 @@ export function searchParts(
       project_id: r.project_id,
       message_id: r.message_id,
       part_id: r.part_id,
-      part_type: pj.type || "unknown",
-      tool: toolName,
-      title,
+      part_type: ptype,
+      tool: ptool,
+      title: ptitle,
       time_created: r.time_created,
       snippet: snippet.text,
       matchPos: snippet.pos,
@@ -428,43 +436,78 @@ export function getTimeline(
   titles: string[];
 }[] {
   const { project = "" } = opts;
-  const projCond = project ? `WHERE project_id = ?` : "";
-  const params = project ? [project] : [];
-  const sessions = db
+  // 全行を JS に載せず SQL 側で日別集計する（message 件数が増えても転送量は日数分）。
+  // 日付境界はサーバーローカル日付（'localtime'）で切る。
+  const sCond = project ? `WHERE project_id = ?` : "";
+  const sParams: string[] = project ? [project] : [];
+  const sessionDays = db
     .prepare(
-      `SELECT id, time_created, time_updated, project_id, directory, title, COALESCE(cost,0) AS cost FROM session ${projCond} ORDER BY time_created ASC`,
+      `SELECT date(time_created / 1000, 'unixepoch', 'localtime') AS day,
+        COUNT(*) AS sessions, COALESCE(SUM(cost), 0) AS cost
+       FROM session ${sCond} GROUP BY day`,
     )
-    .all(...params);
-  const msgCond = project ? `WHERE s.project_id = ?` : "";
-  const msgParams = project ? [project] : [];
-  const msgRows = db
+    .all(...sParams);
+  const mCond = project
+    ? `JOIN session s ON s.id = m.session_id WHERE s.project_id = ?`
+    : "";
+  const mParams: string[] = project ? [project] : [];
+  const messageDays = db
     .prepare(
-      `SELECT m.time_created FROM message m JOIN session s ON s.id = m.session_id ${msgCond}`,
+      `SELECT date(m.time_created / 1000, 'unixepoch', 'localtime') AS day,
+        COUNT(*) AS messages
+       FROM message m ${mCond} GROUP BY day`,
     )
-    .all(...msgParams);
+    .all(...mParams);
+  const tCond = project ? `WHERE project_id = ?` : "";
+  const tParams: string[] = project ? [project] : [];
+  const titleRows = db
+    .prepare(
+      `SELECT day, title FROM (
+         SELECT date(time_created / 1000, 'unixepoch', 'localtime') AS day, title,
+           ROW_NUMBER() OVER (
+             PARTITION BY date(time_created / 1000, 'unixepoch', 'localtime')
+             ORDER BY time_created DESC
+           ) AS rn
+         FROM session ${tCond}
+       ) WHERE rn <= 5 ORDER BY day, rn`,
+    )
+    .all(...tParams);
 
-  const byDay = new Map();
-  const dayKey = (ms: unknown): string => {
-    const d = new Date(Number(ms));
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
+  const byDay = new Map<
+    string,
+    {
+      date: string;
+      sessions: number;
+      messages: number;
+      cost: number;
+      titles: string[];
+    }
+  >();
+  const entry = (day: unknown) => {
+    const k = typeof day === "string" ? day : "";
+    if (!k) return null;
+    let e = byDay.get(k);
+    if (!e) {
+      e = { date: k, sessions: 0, messages: 0, cost: 0, titles: [] };
+      byDay.set(k, e);
+    }
+    return e;
   };
-  for (const s of sessions) {
-    const k = dayKey(s.time_created);
-    if (!byDay.has(k))
-      byDay.set(k, { date: k, sessions: 0, messages: 0, cost: 0, titles: [] });
-    const e = byDay.get(k);
-    e.sessions += 1;
+  for (const s of sessionDays) {
+    const e = entry(s.day);
+    if (!e) continue;
+    e.sessions += Number(s.sessions || 0);
     e.cost += Number(s.cost || 0);
-    if (e.titles.length < 5) e.titles.push(s.title);
   }
-  for (const m of msgRows) {
-    const k = dayKey(m.time_created);
-    if (!byDay.has(k))
-      byDay.set(k, { date: k, sessions: 0, messages: 0, cost: 0, titles: [] });
-    byDay.get(k).messages += 1;
+  for (const m of messageDays) {
+    const e = entry(m.day);
+    if (!e) continue;
+    e.messages += Number(m.messages || 0);
+  }
+  for (const t of titleRows) {
+    const e = entry(t.day);
+    if (!e || e.titles.length >= 5) continue;
+    if (t.title != null && t.title !== "") e.titles.push(String(t.title));
   }
   return [...byDay.values()].sort((a, b) => (a.date < b.date ? 1 : -1));
 }

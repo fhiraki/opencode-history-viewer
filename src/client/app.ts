@@ -62,9 +62,10 @@ function $button(id: string): HTMLButtonElement {
 }
 function highlightHtml(text: string, terms: string[]): string {
   let out = esc(text);
-  for (const t of terms) {
-    if (!t) continue;
-    const e = esc(t).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const raw of terms.slice(0, 8)) {
+    if (!raw) continue;
+    // 長大な検索語は正規表現の爆発を招くため切り詰める
+    const e = esc(raw.slice(0, 100)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     try {
       out = out.replace(new RegExp(`(${e})`, "gi"), "<mark>$1</mark>");
     } catch {}
@@ -72,7 +73,11 @@ function highlightHtml(text: string, terms: string[]): string {
   return out;
 }
 function searchTerms() {
-  return (state.highlight || "").split(/\s+/).filter(Boolean).slice(0, 8);
+  return (state.highlight || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 8)
+    .map((t) => t.slice(0, 100));
 }
 
 async function api<T>(path: string): Promise<T> {
@@ -211,7 +216,12 @@ async function loadProjects() {
 }
 
 // ---------- セッション一覧 ----------
+// 非同期の競合対策: 連打・入力中の古いレスポンスが新しい表示を上書きしないよう世代管理する
+let sessionSeq = 0;
+let detailSeq = 0;
+let searchSeq = 0;
 async function loadSessions() {
+  const my = ++sessionSeq;
   const params = new URLSearchParams({
     limit: String(state.limit),
     offset: String(state.offset),
@@ -230,6 +240,7 @@ async function loadSessions() {
     total: number;
     home?: string;
   }>(`/api/sessions?${params}`);
+  if (my !== sessionSeq) return;
   state.sessions = data.sessions;
   state.total = data.total;
   if (data.home) state.home = data.home;
@@ -264,15 +275,18 @@ async function selectSession(id: string, highlight = ""): Promise<void> {
   state.selectedId = id;
   state.highlight = highlight;
   renderSessionList();
+  const my = ++detailSeq;
   const el = $("sessionDetail");
   el.innerHTML = `<p class="muted">Loading…</p>`;
   try {
     const data = await api<SessionDetail>(
       `/api/session/${encodeURIComponent(id)}`,
     );
+    if (my !== detailSeq) return;
     el.innerHTML = renderDetail(data, searchTerms());
     el.scrollTop = 0;
   } catch (e) {
+    if (my !== detailSeq) return;
     el.innerHTML = `<p>Failed to load: ${esc(e instanceof Error ? e.message : String(e))}</p>`;
   }
   buildNav();
@@ -339,7 +353,8 @@ function renderPart(p: ApiPart, terms: string[]): string {
       highlightTokens((p.output || "").slice(0, 8000), toolOutputLang(p)),
       terms,
     );
-    return `<details class="part" open><summary>🔧 ${label}</summary>
+    // 巨大セッション対策: ツール詳細は閉じた状態で描画し、レイアウト・ペイントを遅延させる
+    return `<details class="part"><summary>🔧 ${label}</summary>
       <div class="part-head">Input</div><div class="part-body">${inputHtml}</div>
       <div class="part-head">Output${p.outputTruncated ? ` (showing part of ${Number(p.outputFullLength || 0).toLocaleString("en-US")} chars)` : ""}</div><div class="part-body">${outputHtml}</div>
     </details>`;
@@ -388,6 +403,7 @@ async function runSearch() {
   await loadSearch();
 }
 async function loadSearch() {
+  const my = ++searchSeq;
   const box = $("searchResults");
   if (!state.searchQ) {
     box.innerHTML = `<p class="muted">Enter keywords to search.</p>`;
@@ -407,6 +423,7 @@ async function loadSearch() {
   const data = await api<{ hits: SearchHit[]; total: number; home?: string }>(
     `/api/search?${params}`,
   );
+  if (my !== searchSeq) return;
   state.searchTotal = data.total;
   if (data.home) state.home = data.home;
   $("searchCount").textContent = `${fmtCount(data.total)} results`;
@@ -415,7 +432,11 @@ async function loadSearch() {
   $button("searchPrev").disabled = state.searchOffset <= 0;
   $button("searchNext").disabled = state.searchOffset + 50 >= data.total;
   box.innerHTML = "";
-  const terms = state.searchQ.split(/\s+/).filter(Boolean);
+  const terms = state.searchQ
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 8)
+    .map((t) => t.slice(0, 100));
   for (const h of data.hits) {
     const d = document.createElement("div");
     d.className = "hit";
