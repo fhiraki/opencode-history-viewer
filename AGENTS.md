@@ -20,6 +20,7 @@
 ## SQLite の落とし穴
 - `node:sqlite` のバインドはスプレッドのみ: `.all(...params)`。配列渡し `.all(arr)` は `Unknown named parameter '0'` で失敗する
 - `part.data` / `message.data` は JSON 文字列。`json_extract(data, '$.type')` で絞り込み、`JSON.parse` は `parseJsonSafe` 経由で行う
+- `session.model` も JSON 文字列（`{"id","providerID","variant"}`。旧形式はプレーン文字列）。表示は `parseModel` 経由にし、生 JSON を出さない
 - LIKE 検索は `escapeLike`（`%_\\`）＋ `ESCAPE '\\'` 必須
 - 巨大出力を返さない caps を維持する: 本文 8000・tool 入力 4000/出力 8000・検索用 `substr(p.data,1,12000)`。617発言セッションで既に約1.7MBになる
 
@@ -28,5 +29,10 @@
 - `biome.json` はスペースインデント（既存コードに合わせている。tab に変えない）
 - push/PR 時に `.github/workflows/check.yml` が `npm run check` を実行する
 - 日本語クエリは必ず URL エンコードする（素の `curl "...?q=日本語&limit=3"` はシェルが `&` を解釈して壊れる）。`curl -G --data-urlencode "q=..."` を使う
-- API: `/api/health` `/api/sessions` `/api/session/:id` `/api/search` `/api/timeline` `/api/stats`
+- API: `/api/health` `/api/projects` `/api/sessions` `/api/session/:id` `/api/search` `/api/timeline` `/api/stats`
 - 静的配信の SPA フォールバック（`index.html`）とパストラバーサルガード（`startsWith(PUBLIC_DIR)`）は残す
+
+## UI（`public/`）
+- CDN 禁止（オフライン動作）。シンタックスハイライトは `app.js` 内の自前トークナイザ（`highlightTokens`）のみで行い、外部ライブラリを追加しない
+- タブのスライド式インジケーターは JS で位置計算（`moveTabIndicator`）＋ CSS transition。`resize` と `document.fonts.ready` でも再計算する
+- ページ送りボタンは対象ページがない場合 `disabled` にする（セッション一覧・検索結果とも）。`button:disabled` のスタイルは `style.css` に定義済み

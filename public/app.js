@@ -22,6 +22,58 @@ function fmtTime(ms) {
   const d = new Date(Number(ms));
   return d.toLocaleString("ja-JP", { hour12: false });
 }
+// セッションの model（JSON文字列またはプレーン文字列）を {provider, id, variant} に正規化
+function parseModel(model) {
+  if (!model) return null;
+  try {
+    const o = typeof model === "string" ? JSON.parse(model) : model;
+    if (o && typeof o === "object") {
+      return {
+        provider: o.providerID || "",
+        id: o.id || o.modelID || "",
+        variant: o.variant || "",
+      };
+    }
+  } catch {
+    // JSON ではないのでプレーン文字列として扱う
+  }
+  return { provider: "", id: String(model), variant: "" };
+}
+function fmtCost(c) {
+  const v = Number(c || 0);
+  if (v <= 0) return "$0";
+  if (v < 0.01) return `$${v.toFixed(4)}`;
+  if (v < 1) return `$${v.toFixed(3)}`;
+  return `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+function fmtCount(n) {
+  const v = Number(n || 0);
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 10_000) return `${Math.round(v / 1000)}k`;
+  if (v >= 1000) return `${(v / 1000).toFixed(1)}k`;
+  return `${v}`;
+}
+// 同日なら「9/18 0:13 → 1:08」、跨ぎなら両日＋所要時間を付ける
+function fmtRange(from, to) {
+  const a = new Date(Number(from));
+  const b = new Date(Number(to));
+  const d = (x) => `${x.getMonth() + 1}/${x.getDate()}`;
+  const t = (x) => `${x.getHours()}:${String(x.getMinutes()).padStart(2, "0")}`;
+  const range =
+    a.toDateString() === b.toDateString()
+      ? `${d(a)} ${t(a)} → ${t(b)}`
+      : `${d(a)} ${t(a)} → ${d(b)} ${t(b)}`;
+  const mins = Math.max(0, Math.round((b - a) / 60000));
+  let dur = `${mins}分`;
+  if (mins >= 1440) {
+    dur = `${Math.floor(mins / 1440)}日${Math.floor((mins % 1440) / 60)}時間`;
+  } else if (mins >= 60) {
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    dur = m ? `${h}時間${m}分` : `${h}時間`;
+  }
+  return `${range}（${dur}）`;
+}
 function esc(s) {
   return String(s ?? "")
     .replaceAll("&", "&amp;")
@@ -44,6 +96,604 @@ function searchTerms() {
   return (state.highlight || "").split(/\s+/).filter(Boolean).slice(0, 8);
 }
 
+// ---------- シンタックスハイライト（依存なし・自前トークナイザ） ----------
+const LANG_ALIASES = {
+  js: "javascript",
+  jsx: "javascript",
+  mjs: "javascript",
+  cjs: "javascript",
+  ts: "typescript",
+  tsx: "typescript",
+  mts: "typescript",
+  cts: "typescript",
+  py: "python",
+  pyi: "python",
+  sh: "bash",
+  shell: "bash",
+  zsh: "bash",
+  yml: "yaml",
+  jsonc: "json",
+  xml: "html",
+  vue: "html",
+  svelte: "html",
+  astro: "html",
+  scss: "css",
+  less: "css",
+  toml: "ini",
+  cfg: "ini",
+  patch: "diff",
+  txt: "plaintext",
+  text: "plaintext",
+};
+const EXT_TO_LANG = {
+  js: "javascript",
+  mjs: "javascript",
+  cjs: "javascript",
+  jsx: "javascript",
+  ts: "typescript",
+  tsx: "typescript",
+  mts: "typescript",
+  cts: "typescript",
+  py: "python",
+  pyi: "python",
+  sh: "bash",
+  bash: "bash",
+  zsh: "bash",
+  json: "json",
+  jsonc: "json",
+  html: "html",
+  htm: "html",
+  xml: "html",
+  vue: "html",
+  svelte: "html",
+  astro: "html",
+  css: "css",
+  scss: "css",
+  less: "css",
+  sql: "sql",
+  yml: "yaml",
+  yaml: "yaml",
+  ini: "ini",
+  toml: "ini",
+  cfg: "ini",
+  diff: "diff",
+  patch: "diff",
+  java: "java",
+  c: "c",
+  h: "c",
+  cpp: "cpp",
+  hpp: "cpp",
+  cc: "cpp",
+  cs: "csharp",
+  go: "go",
+  rs: "rust",
+  php: "php",
+  swift: "swift",
+  kt: "kotlin",
+  kts: "kotlin",
+};
+const CLIKE_KEYWORDS = [
+  "break",
+  "case",
+  "catch",
+  "class",
+  "const",
+  "continue",
+  "debugger",
+  "default",
+  "delete",
+  "do",
+  "else",
+  "export",
+  "extends",
+  "false",
+  "finally",
+  "for",
+  "function",
+  "if",
+  "import",
+  "in",
+  "instanceof",
+  "let",
+  "new",
+  "null",
+  "return",
+  "static",
+  "super",
+  "switch",
+  "this",
+  "throw",
+  "true",
+  "try",
+  "typeof",
+  "undefined",
+  "var",
+  "void",
+  "while",
+  "with",
+  "yield",
+  "async",
+  "await",
+  "of",
+  "from",
+  "as",
+  "package",
+  "public",
+  "private",
+  "protected",
+  "final",
+  "virtual",
+  "override",
+  "int",
+  "long",
+  "double",
+  "float",
+  "char",
+  "short",
+  "unsigned",
+  "signed",
+  "struct",
+  "union",
+  "typedef",
+  "sizeof",
+  "extern",
+  "register",
+  "goto",
+  "namespace",
+  "template",
+  "typename",
+  "nullptr",
+  "constexpr",
+  "decltype",
+  "noexcept",
+  "friend",
+  "operator",
+  "throws",
+  "synchronized",
+  "record",
+  "concept",
+  "requires",
+  "interface",
+  "type",
+  "enum",
+  "readonly",
+  "declare",
+  "abstract",
+  "satisfies",
+  "keyof",
+  "infer",
+  "never",
+  "unknown",
+  "any",
+  "string",
+  "number",
+  "boolean",
+  "symbol",
+  "bigint",
+  "object",
+  "Promise",
+  "console",
+];
+const PYTHON_KEYWORDS = [
+  "False",
+  "None",
+  "True",
+  "and",
+  "as",
+  "assert",
+  "async",
+  "await",
+  "break",
+  "class",
+  "continue",
+  "def",
+  "del",
+  "elif",
+  "else",
+  "except",
+  "finally",
+  "for",
+  "from",
+  "global",
+  "if",
+  "import",
+  "in",
+  "is",
+  "lambda",
+  "nonlocal",
+  "not",
+  "or",
+  "pass",
+  "raise",
+  "return",
+  "try",
+  "while",
+  "with",
+  "yield",
+  "print",
+  "self",
+];
+const BASH_KEYWORDS = [
+  "if",
+  "then",
+  "else",
+  "elif",
+  "fi",
+  "for",
+  "while",
+  "until",
+  "do",
+  "done",
+  "in",
+  "function",
+  "select",
+  "case",
+  "esac",
+  "break",
+  "continue",
+  "return",
+  "exit",
+  "export",
+  "local",
+  "readonly",
+  "declare",
+  "unset",
+  "eval",
+  "exec",
+  "source",
+  "trap",
+  "shift",
+  "set",
+  "echo",
+  "printf",
+  "cd",
+  "pwd",
+  "ls",
+  "cat",
+  "grep",
+  "sed",
+  "awk",
+  "find",
+  "xargs",
+  "mkdir",
+  "rm",
+  "cp",
+  "mv",
+  "touch",
+  "chmod",
+  "chown",
+  "ln",
+  "tar",
+  "curl",
+  "wget",
+  "git",
+  "npm",
+  "node",
+  "npx",
+  "python",
+  "python3",
+  "pip",
+  "ssh",
+  "test",
+];
+const SQL_KEYWORDS = new Set(
+  "select from where join left right inner outer on group by order having limit offset insert into values update set delete create table index view drop alter add column as and or not null primary key foreign references distinct count sum avg min max like in is between union all case when then else end asc desc".split(
+    " ",
+  ),
+);
+const YAML_CONSTANTS = new Set(
+  "true false null yes no on off True False Null None Yes No On Off TRUE FALSE NULL YES NO ON OFF".split(
+    " ",
+  ),
+);
+
+function keywordRule(words) {
+  const sorted = [...words].sort((a, b) => b.length - a.length);
+  return [new RegExp(`\\b(?:${sorted.join("|")})\\b`), "k"];
+}
+
+// rules: [正規表現, クラス名または分類関数(word, offset, src)] の配列。sticky マッチで先頭から順に試す
+function makeLexer(rules) {
+  const compiled = rules.map(([re, cls, extra]) => [
+    new RegExp(re.source, extra ? `y${extra}` : "y"),
+    cls,
+  ]);
+  return (src) => {
+    let out = "";
+    let pos = 0;
+    while (pos < src.length) {
+      let advanced = false;
+      for (const [re, cls] of compiled) {
+        re.lastIndex = pos;
+        const m = re.exec(src);
+        if (m && m[0].length > 0) {
+          const clsName = typeof cls === "function" ? cls(m[0], pos, src) : cls;
+          out += clsName
+            ? `<span class="tok-${clsName}">${esc(m[0])}</span>`
+            : esc(m[0]);
+          pos += m[0].length;
+          advanced = true;
+          break;
+        }
+      }
+      if (!advanced) {
+        out += esc(src[pos]);
+        pos += 1;
+      }
+    }
+    return out;
+  };
+}
+
+const WS_RULE = [/\s+/, null];
+const DQ_RULE = [/"(?:[^"\\\n]|\\.)*(?:"|$)/, "s"];
+const SQ_RULE = [/'(?:[^'\\\n]|\\.)*(?:'|$)/, "s"];
+const HEX_NUM_RULE = [/\b0x[\da-fA-F_]+\b/, "n"];
+const DEC_NUM_RULE = [/\b\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?\b/, "n"];
+const IDENT_RULE = [/[A-Za-z_$][\w$]*/, null];
+const FUNC_CALL_RULE = [/[A-Za-z_$][\w$]*(?=\s*\()/, "f"];
+
+function clikeLexer() {
+  return makeLexer([
+    WS_RULE,
+    [/\/\/[^\n]*/, "c"],
+    [/\/\*[\s\S]*?(?:\*\/|$)/, "c"],
+    DQ_RULE,
+    SQ_RULE,
+    [/`(?:[^`\\]|\\.)*(?:`|$)/, "s"],
+    HEX_NUM_RULE,
+    DEC_NUM_RULE,
+    keywordRule(CLIKE_KEYWORDS),
+    FUNC_CALL_RULE,
+    IDENT_RULE,
+  ]);
+}
+function pythonLexer() {
+  return makeLexer([
+    WS_RULE,
+    [/#[^\n]*/, "c"],
+    [/"""[\s\S]*?(?:"""|$)/, "s"],
+    [/'''[\s\S]*?(?:'''|$)/, "s"],
+    DQ_RULE,
+    SQ_RULE,
+    HEX_NUM_RULE,
+    DEC_NUM_RULE,
+    keywordRule(PYTHON_KEYWORDS),
+    [/@[\w.]+/, "f"],
+    [/[A-Za-z_]\w*(?=\s*\()/, "f"],
+    [/[A-Za-z_]\w*/, null],
+  ]);
+}
+function bashLexer() {
+  return makeLexer([
+    WS_RULE,
+    DQ_RULE,
+    [/'[^'\n]*(?:'|$)/, "s"],
+    [/\$\{[^}\n]*\}|\$[\w?*#@!$~-]/, "var"],
+    [/#[^\n]*/, "c"],
+    keywordRule(BASH_KEYWORDS),
+    [/\b\d+\b/, "n"],
+    [/[A-Za-z_][\w.-]*/, null],
+  ]);
+}
+function jsonLexer() {
+  return makeLexer([
+    WS_RULE,
+    [/"(?:[^"\\]|\\.)*"(?=\s*:)/, "key"],
+    [/"(?:[^"\\]|\\.)*"(?:"|$)/, "s"],
+    [/\b-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b/, "n"],
+    [/\b(?:true|false|null)\b/, "k"],
+  ]);
+}
+function htmlLexer() {
+  return makeLexer([
+    WS_RULE,
+    [/<!--[\s\S]*?(?:-->|$)/, "c"],
+    [/<\/?[A-Za-z][\w:.-]*/, "tag"],
+    [/\/?>/, "tag"],
+    [/[A-Za-z_:][\w:.-]*(?=\s*=(?!=))/, "attr"],
+    DQ_RULE,
+    SQ_RULE,
+  ]);
+}
+function cssLexer() {
+  return makeLexer([
+    WS_RULE,
+    [/\/\*[\s\S]*?(?:\*\/|$)/, "c"],
+    DQ_RULE,
+    SQ_RULE,
+    [/@[\w-]+/, "k"],
+    [/[A-Za-z-]+(?=\s*:)/, "key"],
+    [/#(?:[\da-fA-F]{8}|[\da-fA-F]{6}|[\da-fA-F]{4}|[\da-fA-F]{3})\b/, "n"],
+    [/-?(?:\d+\.?\d*|\.\d+)(?:%|[a-zA-Z]+)?/, "n"],
+    [/[A-Za-z-]+/, null],
+  ]);
+}
+function sqlLexer() {
+  return makeLexer([
+    WS_RULE,
+    [/--[^\n]*/, "c"],
+    [/\/\*[\s\S]*?(?:\*\/|$)/, "c"],
+    [/'(?:[^']|'')*(?:'|$)/, "s"],
+    [/"(?:[^"]|"")*(?:"|$)/, null],
+    [/\b\d+(?:\.\d+)?\b/, "n"],
+    [
+      /[A-Za-z_][\w$]*/,
+      (word, at, src) => {
+        if (SQL_KEYWORDS.has(word.toLowerCase())) return "k";
+        return /^\s*\(/.test(src.slice(at + word.length, at + word.length + 8))
+          ? "f"
+          : null;
+      },
+    ],
+  ]);
+}
+function yamlLexer() {
+  return makeLexer([
+    WS_RULE,
+    [/#[^\n]*/, "c"],
+    DQ_RULE,
+    SQ_RULE,
+    [/[A-Za-z0-9_./-]+(?=:(?:[ \t]|$))/, "key", "m"],
+    [/\b\d+(?:\.\d+)?\b/, "n"],
+    [/[A-Za-z]+/, (word) => (YAML_CONSTANTS.has(word) ? "k" : null)],
+    [/[A-Za-z0-9_./-]+/, null],
+  ]);
+}
+function iniLexer() {
+  return makeLexer([
+    WS_RULE,
+    [/[;#][^\n]*/, "c"],
+    [/\[[^\]\n]*\]?/, "k"],
+    [/[^\s=;#[\n][^=\n]*?(?=\s*=)/, "key"],
+    [/\b\d+(?:\.\d+)?\b/, "n"],
+  ]);
+}
+
+const CLIKE_LANGS = [
+  "javascript",
+  "typescript",
+  "java",
+  "c",
+  "cpp",
+  "csharp",
+  "go",
+  "rust",
+  "php",
+  "swift",
+  "kotlin",
+];
+const HIGHLIGHTERS = Object.fromEntries(
+  CLIKE_LANGS.map((lang) => [lang, clikeLexer()]),
+);
+HIGHLIGHTERS.python = pythonLexer();
+HIGHLIGHTERS.bash = bashLexer();
+HIGHLIGHTERS.json = jsonLexer();
+HIGHLIGHTERS.html = htmlLexer();
+HIGHLIGHTERS.css = cssLexer();
+HIGHLIGHTERS.sql = sqlLexer();
+HIGHLIGHTERS.yaml = yamlLexer();
+HIGHLIGHTERS.ini = iniLexer();
+
+function highlightDiff(src) {
+  return src
+    .split("\n")
+    .map((line) => {
+      let cls = null;
+      if (/^(?:@@ |diff |index |--- |\+\+\+ |commit )/.test(line)) cls = "hunk";
+      else if (line.startsWith("+")) cls = "add";
+      else if (line.startsWith("-")) cls = "del";
+      const e = esc(line);
+      return cls ? `<span class="tok-${cls}">${e}</span>` : e;
+    })
+    .join("\n");
+}
+
+function highlightTokens(raw, lang) {
+  if (lang === "diff") return highlightDiff(raw);
+  const lex = HIGHLIGHTERS[lang];
+  return lex ? lex(raw) : esc(raw);
+}
+
+function normalizeLang(info, code) {
+  if (info) {
+    if (LANG_ALIASES[info]) return LANG_ALIASES[info];
+    if (HIGHLIGHTERS[info]) return info;
+    return "plaintext";
+  }
+  const trimmed = code.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      JSON.parse(trimmed);
+      return "json";
+    } catch {
+      // JSON ではないので次の判定へ
+    }
+  }
+  const pmLines = trimmed
+    .split("\n")
+    .filter((l) => /^[+-]/.test(l) && !/^(?:\+\+\+|---)/.test(l));
+  if (/^(?:@@ |diff |--- |\+\+\+ )/m.test(trimmed) || pmLines.length >= 2) {
+    return "diff";
+  }
+  return "plaintext";
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// ハイライト済み HTML のタグ部分を避けて検索語だけ <mark> 化する
+function markTermsHtml(html, terms) {
+  const clean = [...new Set(terms.filter(Boolean))].slice(0, 8);
+  if (!clean.length) return html;
+  const pattern = new RegExp(
+    `(${clean.map((t) => escapeRegExp(esc(t))).join("|")})`,
+    "gi",
+  );
+  return html
+    .split(/(<[^>]*>)/g)
+    .map((chunk, i) =>
+      i % 2 === 1 ? chunk : chunk.replace(pattern, "<mark>$1</mark>"),
+    )
+    .join("");
+}
+
+const FENCE_RE = /```([^\n]*)\n([\s\S]*?)(?:\n```|```|$)/g;
+function renderInlineCode(escapedHtml) {
+  return escapedHtml.replace(/`([^`\n]+)`/g, '<code class="ic">$1</code>');
+}
+function renderProse(text, terms) {
+  FENCE_RE.lastIndex = 0;
+  let html = "";
+  let last = 0;
+  let m = FENCE_RE.exec(text);
+  while (m !== null) {
+    if (m.index > last) {
+      html += renderInlineCode(esc(text.slice(last, m.index)));
+    }
+    const code = m[2].replace(/\n$/, "");
+    if (!code) {
+      html += renderInlineCode(esc(m[0]));
+    } else {
+      const lang = normalizeLang((m[1] || "").trim().toLowerCase(), code);
+      const label = lang === "plaintext" ? "TEXT" : lang.toUpperCase();
+      html += `<div class="codeblock"><div class="codelang">${esc(label)}</div><pre><code>${highlightTokens(code, lang)}</code></pre></div>`;
+    }
+    last = m.index + m[0].length;
+    m = FENCE_RE.exec(text);
+  }
+  if (last < text.length) {
+    html += renderInlineCode(esc(text.slice(last)));
+  }
+  return markTermsHtml(html, terms);
+}
+
+function prettyJson(s) {
+  try {
+    return JSON.stringify(JSON.parse(s), null, 2);
+  } catch {
+    return s;
+  }
+}
+
+// read/edit/write の filePath から出力の言語を推定する（他ツールはプレーン表示）
+function toolOutputLang(p) {
+  if (p.tool !== "read" && p.tool !== "edit" && p.tool !== "write") {
+    return "plaintext";
+  }
+  try {
+    const input = JSON.parse(p.input || "{}");
+    const filePath = typeof input.filePath === "string" ? input.filePath : "";
+    const base = filePath.split("/").pop() || "";
+    const dot = base.lastIndexOf(".");
+    const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
+    return (ext && EXT_TO_LANG[ext]) || "plaintext";
+  } catch {
+    return "plaintext";
+  }
+}
+
 async function api(path) {
   const r = await fetch(path);
   if (!r.ok) throw new Error(`${path}: ${r.status}`);
@@ -62,8 +712,20 @@ function switchTab(name) {
   document.querySelectorAll(".tab").forEach((s) => {
     s.classList.toggle("active", s.id === `tab-${name}`);
   });
+  moveTabIndicator();
   if (name === "timeline") loadTimeline();
   if (name === "stats") loadStats();
+  if (name === "search") loadSearch();
+}
+
+// iOS 風セグメントコントロール: 選択中ボタンへインジケーターをスライドさせる
+function moveTabIndicator() {
+  const nav = document.querySelector(".tabs");
+  const active = nav?.querySelector("button.active");
+  const indicator = nav?.querySelector(".tabs-indicator");
+  if (!nav || !active || !indicator) return;
+  indicator.style.width = `${active.offsetWidth}px`;
+  indicator.style.transform = `translateX(${active.offsetLeft}px)`;
 }
 
 // ---------- プロジェクト ----------
@@ -108,6 +770,8 @@ function renderSessionList() {
     `${state.total} 件${state.timelineDay ? `（${state.timelineDay}）` : ""}`;
   $("pageInfo").textContent =
     `${state.offset + 1}–${Math.min(state.offset + state.limit, state.total)} / ${state.total}`;
+  $("prevPage").disabled = state.offset <= 0;
+  $("nextPage").disabled = state.offset + state.limit >= state.total;
   for (const s of state.sessions) {
     const b = document.createElement("button");
     b.className = `session-item${s.id === state.selectedId ? " selected" : ""}`;
@@ -138,11 +802,29 @@ async function selectSession(id, highlight = "") {
 }
 
 function renderDetail({ session, messages }, terms) {
+  const model = parseModel(session.model);
+  const modelText = model
+    ? `${model.provider ? `${model.provider}/` : ""}${model.id}${model.variant && model.variant !== "default" ? ` ・ ${model.variant}` : ""}`
+    : "";
+  const cost = Number(session.cost || 0);
+  const tokIn = Number(session.tokens_input || 0);
+  const tokOut = Number(session.tokens_output || 0);
+  const tokReason = Number(session.tokens_reasoning || 0);
+  const chips = [
+    modelText
+      ? `<span class="chip model" title="${esc(session.model || "")}"><span class="chip-label">モデル</span>${esc(modelText)}</span>`
+      : "",
+    session.agent
+      ? `<span class="chip"><span class="chip-label">エージェント</span>${esc(session.agent)}</span>`
+      : "",
+    `<span class="chip cost" title="正確な値: $${cost}"><span class="chip-label">コスト</span>${esc(fmtCost(cost))}</span>`,
+    `<span class="chip" title="入力 ${tokIn.toLocaleString()} / 出力 ${tokOut.toLocaleString()} / 推論 ${tokReason.toLocaleString()}"><span class="chip-label">トークン</span>${esc(fmtCount(tokIn + tokOut + tokReason))}</span>`,
+    `<span class="chip"><span class="chip-label">発言</span>${messages.length}</span>`,
+  ].join("");
   const head = `
     <h2>${esc(session.title || "(無題)")}</h2>
-    <div class="muted">${esc(session.directory || "")} ・ ${esc(session.id)}<br>
-    作成: ${fmtTime(session.time_created)} ／ 更新: ${fmtTime(session.time_updated)}<br>
-    モデル: ${esc(session.model || "")} ・ エージェント: ${esc(session.agent || "")} ・ コスト: ${esc(session.cost ?? 0)}</div>`;
+    <div class="chips">${chips}</div>
+    <div class="muted sub-line">${esc(session.directory || "")} ・ ${esc(fmtRange(session.time_created, session.time_updated))}</div>`;
   const body = messages
     .map((m) => {
       const parts = m.parts
@@ -164,16 +846,24 @@ function renderPart(p, terms) {
   if (p.type === "step-start" || p.type === "step-finish") return "";
   if (p.type === "text" || p.type === "reasoning") {
     if (p.type === "reasoning") {
-      return `<details class="part"><summary>推論過程（クリックで展開）</summary><div class="part-body">${highlightHtml(p.text || "", terms)}</div></details>`;
+      return `<details class="part"><summary>推論過程（クリックで展開）</summary><div class="part-body">${renderProse(p.text || "", terms)}</div></details>`;
     }
-    return `<div class="part"><div class="part-body prose">${highlightHtml(p.text || "", terms)}${p.truncated ? `<div class="muted">…（${p.fullLength} 文字のため省略）</div>` : ""}</div></div>`;
+    return `<div class="part"><div class="part-body prose">${renderProse(p.text || "", terms)}${p.truncated ? `<div class="muted">…（${p.fullLength} 文字のため省略）</div>` : ""}</div></div>`;
   }
   if (p.type === "tool") {
     const label =
       `${esc(p.tool)} ${esc(p.title || "")} ${esc(p.status || "")}`.trim();
+    const inputHtml = markTermsHtml(
+      highlightTokens(prettyJson(p.input || ""), "json"),
+      terms,
+    );
+    const outputHtml = markTermsHtml(
+      highlightTokens((p.output || "").slice(0, 8000), toolOutputLang(p)),
+      terms,
+    );
     return `<details class="part" open><summary>🔧 ${label}</summary>
-      <div class="part-head">入力</div><div class="part-body">${highlightHtml(p.input || "", terms)}</div>
-      <div class="part-head">出力${p.outputTruncated ? `（${p.outputFullLength} 文字中一部）` : ""}</div><div class="part-body">${highlightHtml((p.output || "").slice(0, 8000), terms)}</div>
+      <div class="part-head">入力</div><div class="part-body">${inputHtml}</div>
+      <div class="part-head">出力${p.outputTruncated ? `（${p.outputFullLength} 文字中一部）` : ""}</div><div class="part-body">${outputHtml}</div>
     </details>`;
   }
   if (p.type === "patch") {
@@ -224,6 +914,9 @@ async function loadSearch() {
   if (!state.searchQ) {
     box.innerHTML = `<p class="muted">キーワードを入力して検索してください。</p>`;
     $("searchCount").textContent = "";
+    $("searchPageInfo").textContent = "";
+    $("searchPrev").disabled = true;
+    $("searchNext").disabled = true;
     return;
   }
   box.innerHTML = `<p class="muted">検索中…</p>`;
@@ -238,6 +931,8 @@ async function loadSearch() {
   $("searchCount").textContent = `${data.total} 件`;
   $("searchPageInfo").textContent =
     `${state.searchOffset + 1}–${Math.min(state.searchOffset + 50, data.total)} / ${data.total}`;
+  $("searchPrev").disabled = state.searchOffset <= 0;
+  $("searchNext").disabled = state.searchOffset + 50 >= data.total;
   box.innerHTML = "";
   const terms = state.searchQ.split(/\s+/).filter(Boolean);
   for (const h of data.hits) {
@@ -332,3 +1027,8 @@ async function loadStats() {
 // 初期化
 await loadProjects();
 await loadSessions();
+moveTabIndicator();
+window.addEventListener("resize", moveTabIndicator);
+if (document.fonts?.ready) {
+  document.fonts.ready.then(moveTabIndicator);
+}

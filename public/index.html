@@ -3,13 +3,24 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark" />
 <title>OpenCode 履歴ビューワー</title>
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">OpenCode 履歴ビューワー</div>
+  <div class="brand">
+    <span class="brand-mark">
+      <svg viewBox="0 0 16 16" role="img" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round">
+        <title>履歴</title>
+        <circle cx="8" cy="8" r="6.2" />
+        <path d="M8 4.6V8l2.4 1.6" />
+      </svg>
+    </span>
+    <span>OpenCode 履歴ビューワー<small>HISTORY VIEWER</small></span>
+  </div>
   <nav class="tabs">
+    <span class="tabs-indicator" aria-hidden="true"></span>
     <button type="button" data-tab="sessions" class="active">セッション</button>
     <button type="button" data-tab="search">検索</button>
     <button type="button" data-tab="timeline">タイムライン</button>
