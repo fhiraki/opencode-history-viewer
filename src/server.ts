@@ -194,13 +194,23 @@ const server = http.createServer(async (req, res) => {
 });
 
 // LAN 公開を避けるため loopback のみにバインドする（履歴 DB は機密情報を含みうる）
+const startedAt = new Date();
 server.listen(PORT, "127.0.0.1", () => {
+  console.log(
+    `[opencode-viewer] 開始: ${startedAt.toLocaleString("ja-JP")} (${startedAt.toISOString()})`,
+  );
   console.log(`[opencode-viewer] http://127.0.0.1:${PORT} で起動しました`);
   console.log(`[opencode-viewer] 終了は Ctrl+C`);
 });
 
 function shutdown(signal: string): void {
-  console.log(`[opencode-viewer] ${signal} を受信したため終了します`);
+  const uptimeMin = Math.max(
+    0,
+    Math.round((Date.now() - startedAt.getTime()) / 60000),
+  );
+  console.log(
+    `[opencode-viewer] ${signal} を受信したため終了します（稼働約${uptimeMin}分）`,
+  );
   server.close(() => {
     try {
       db.close();
