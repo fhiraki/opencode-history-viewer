@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import os from "node:os";
 import { describe, it } from "node:test";
 import {
   esc,
   fmtCost,
   fmtCount,
+  fmtDayWithWeekday,
   fmtDuration,
   fmtExact,
   fmtRange,
@@ -96,6 +98,19 @@ describe("fmtDuration / fmtRange", () => {
   });
 });
 
+describe("fmtDayWithWeekday", () => {
+  it("appends the English weekday to YYYY-MM-DD", () => {
+    // 年月日からローカル Date を組み立てるためタイムゾーンずれなし
+    assert.equal(fmtDayWithWeekday("2026-09-19"), "2026-09-19 (Sat)");
+    assert.equal(fmtDayWithWeekday("2026-09-18"), "2026-09-18 (Fri)");
+  });
+  it("passes through invalid dates untouched", () => {
+    assert.equal(fmtDayWithWeekday(""), "");
+    assert.equal(fmtDayWithWeekday("not-a-date"), "not-a-date");
+    assert.equal(fmtDayWithWeekday("2026-02-30"), "2026-02-30");
+  });
+});
+
 describe("esc / prettyJson", () => {
   it("escapes HTML special chars", () => {
     assert.equal(esc('<a href="x">&'), "&lt;a href=&quot;x&quot;&gt;&amp;");
@@ -107,20 +122,16 @@ describe("esc / prettyJson", () => {
 });
 
 describe("shortenHome", () => {
+  // 実行環境のホームをそのまま使い、テスト内に個人のパスを書かない
+  const home = os.homedir();
   it("shortens paths under home to ~/ notation", () => {
-    assert.equal(
-      shortenHome("/Users/fhiraki/work/x", "/Users/fhiraki"),
-      "~/work/x",
-    );
-    assert.equal(shortenHome("/Users/fhiraki", "/Users/fhiraki"), "~");
+    assert.equal(shortenHome(`${home}/work/x`, home), "~/work/x");
+    assert.equal(shortenHome(home, home), "~");
   });
   it("leaves non-matching and empty values untouched", () => {
-    assert.equal(shortenHome("/tmp/x", "/Users/fhiraki"), "/tmp/x");
-    assert.equal(
-      shortenHome("/Users/fhiraki2/x", "/Users/fhiraki"),
-      "/Users/fhiraki2/x",
-    );
-    assert.equal(shortenHome("", "/Users/fhiraki"), "");
+    assert.equal(shortenHome("/tmp/x", home), "/tmp/x");
+    assert.equal(shortenHome(`${home}2/x`, home), `${home}2/x`);
+    assert.equal(shortenHome("", home), "");
     assert.equal(shortenHome("/a/b", ""), "/a/b");
   });
 });

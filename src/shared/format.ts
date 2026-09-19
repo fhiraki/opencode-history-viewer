@@ -94,6 +94,27 @@ export function fmtRange(from: number, to: number): string {
   return `${range} (${fmtDuration(b.getTime() - a.getTime())})`;
 }
 
+// "YYYY-MM-DD" に英語の曜日を併記する（例: "2026-09-19 (Sat)"）。
+// タイムラインの日付はサーバーローカルの暦日文字列なので、epoch 経由ではなく
+// 年月日からローカル Date を組み立てて曜日を求める（タイムゾーンずれなし）。
+export function fmtDayWithWeekday(date: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date || "");
+  if (!m) return date;
+  const y = Number(m[1]);
+  const mon = Number(m[2]);
+  const day = Number(m[3]);
+  const d = new Date(y, mon - 1, day);
+  if (
+    d.getFullYear() !== y ||
+    d.getMonth() !== mon - 1 ||
+    d.getDate() !== day
+  ) {
+    return date;
+  }
+  const wd = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()];
+  return `${date} (${wd})`;
+}
+
 export function esc(s: unknown): string {
   return String(s ?? "")
     .replaceAll("&", "&amp;")

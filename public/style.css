@@ -27,6 +27,8 @@
 }
 html {
   color-scheme: dark;
+  /* 引っ張り更新（pull-to-refresh）による意図せぬリロードを抑止する */
+  overscroll-behavior-y: none;
 }
 body {
   margin: 0;
@@ -34,6 +36,7 @@ body {
   font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.65;
+  overscroll-behavior-y: none;
   background:
     radial-gradient(
       1100px 320px at 15% -80px,
@@ -493,6 +496,120 @@ main {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------- ターン区切り＋回答抽出（Phase 1） ---------- */
+.turn {
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid rgba(91, 157, 255, 0.45);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.015);
+  padding: 4px 14px 10px;
+  margin: 18px 0;
+}
+.turn.opening {
+  border-left-color: rgba(255, 255, 255, 0.18);
+}
+.turn-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 10px 0 2px;
+}
+.turn-label {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #bcd4ff;
+  background: rgba(91, 157, 255, 0.12);
+  border: 1px solid rgba(91, 157, 255, 0.35);
+  border-radius: 999px;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+.turn.opening .turn-label {
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--border);
+}
+.turn-meta {
+  color: var(--faint);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.msg.user-msg {
+  border: 1px solid rgba(47, 111, 237, 0.45);
+  border-radius: 10px;
+  background: linear-gradient(
+    180deg,
+    rgba(47, 111, 237, 0.12),
+    rgba(47, 111, 237, 0.04)
+  );
+  padding: 10px 12px;
+  margin: 10px 0;
+}
+.part.question {
+  border-color: transparent;
+  background: transparent;
+  margin: 4px 0;
+}
+.part.question .part-body {
+  padding: 4px 2px;
+}
+.part.answer {
+  border-color: rgba(167, 139, 250, 0.45);
+  border-left: 3px solid var(--accent2);
+  background: rgba(167, 139, 250, 0.06);
+}
+.part-head.answer-head {
+  background: rgba(167, 139, 250, 0.12);
+  color: #cdbcfd;
+}
+details.part.worklog {
+  border-style: dashed;
+}
+details.part.worklog > summary {
+  color: var(--faint);
+  font-weight: 600;
+}
+.worklog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border-soft);
+}
+.worklog-body .part.work-item {
+  margin: 0;
+}
+/* 回答なしメッセージ: msg-headと作業ログ概要を1行に合体させた開閉スイッチ */
+.msg.work-only > summary.msg-head {
+  cursor: pointer;
+  list-style: none;
+  margin-bottom: 0;
+}
+.msg.work-only > summary.msg-head::-webkit-details-marker {
+  display: none;
+}
+.msg.work-only > summary.msg-head::before {
+  content: "▸";
+  display: inline-block;
+  color: var(--accent);
+  transition: transform 0.15s ease;
+}
+.msg.work-only[open] > summary.msg-head::before {
+  transform: rotate(90deg);
+}
+.work-summary {
+  margin-left: auto;
+  color: var(--faint);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .part {
   margin: 10px 0;
   border: 1px solid var(--border-soft);
@@ -646,7 +763,7 @@ mark {
 }
 .day-row {
   display: grid;
-  grid-template-columns: 110px 1fr 190px;
+  grid-template-columns: max-content minmax(60px, 1fr) max-content;
   gap: 12px;
   align-items: center;
   background: var(--panel);
@@ -668,8 +785,15 @@ mark {
 }
 .day-row strong {
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.day-row > div:first-child,
+.day-row > div:last-child {
+  white-space: nowrap;
+  min-width: 0;
 }
 .bar {
+  min-width: 0;
   height: 10px;
   background: rgba(255, 255, 255, 0.07);
   border-radius: 999px;
@@ -808,10 +932,14 @@ tbody tr:hover td {
     padding: 16px;
   }
   .day-row {
-    grid-template-columns: 96px 1fr;
+    grid-template-columns: max-content minmax(40px, 1fr) max-content;
+    gap: 8px;
+    padding: 8px 10px;
   }
-  .day-row .muted:last-child {
-    grid-column: 1 / -1;
+  .day-row > div:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 12px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -824,6 +952,7 @@ tbody tr:hover td {
   .session-item::before,
   .hit,
   .day-row,
+  .msg.work-only > summary.msg-head::before,
   details.part summary::before {
     animation: none;
     transition: none;

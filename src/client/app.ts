@@ -3,6 +3,7 @@ import {
   esc,
   fmtCost,
   fmtCount,
+  fmtDayWithWeekday,
   fmtDuration,
   fmtExact,
   fmtRange,
@@ -11,6 +12,7 @@ import {
   prettyJson,
   shortenHome,
 } from "../shared/format.ts";
+import { resolveNavIndex } from "../shared/nav.ts";
 import {
   highlightTokens,
   markTermsHtml,
@@ -251,7 +253,7 @@ function renderSessionList() {
   const el = $("sessionList");
   el.innerHTML = "";
   $("sessionCount").textContent =
-    `${fmtCount(state.total)} sessions${state.timelineDay ? ` (${state.timelineDay})` : ""}`;
+    `${fmtCount(state.total)} sessions${state.timelineDay ? ` (${fmtDayWithWeekday(state.timelineDay)})` : ""}`;
   $("pageInfo").textContent =
     `${fmtCount(state.offset + 1)}–${fmtCount(Math.min(state.offset + state.limit, state.total))} / ${fmtCount(state.total)}`;
   $button("prevPage").disabled = state.offset <= 0;
@@ -316,31 +318,155 @@ function renderDetail(
     <h2>${esc(session.title || "(Untitled)")}</h2>
     <div class="chips">${chips}</div>
     <div class="muted sub-line">${esc(shortenHome(session.directory || "", state.home))} · ${esc(fmtRange(session.time_created, session.time_updated))}</div>`;
-  const body = messages
-    .map((m) => {
-      const parts = m.parts
-        .map((p) => renderPart(p, terms))
-        .filter(Boolean)
-        .join("");
-      if (!parts) return "";
-      return `<div class="msg">
-      <div class="msg-head"><span class="role ${esc(m.role)}">${esc(m.role)}</span>
-      <span class="time">${fmtTime(m.time_created)}</span>
-      ${m.tokens ? `<span class="time">tok ${m.tokens.total == null ? "" : Number(m.tokens.total).toLocaleString("en-US")}</span>` : ""}</div>
-      ${parts}</div>`;
-    })
-    .join("");
+  const body = renderTurns(messages, terms);
   return head + body;
 }
 
-function renderPart(p: ApiPart, terms: string[]): string {
+// ---------- ターン区切り＋回答抽出（Phase 1） ----------
+// 1往復（User発言→次のUser発言まで）を .turn で囲み、左ボーダーで区切る。
+// assistantメッセージ内では text を「回答カード」として先頭に抜き出し、
+// tool/reasoning/patch 等は1つの「作業ログ」detailsにまとめる（回答が埋もれない）。
+// 作業ログは閉状態で描画し、巨大セッションの描画コストを増やさない。
+function groupIntoTurns(messages: ApiMessage[]): ApiMessage[][] {
+  const turns: ApiMessage[][] = [];
+  for (const m of messages) {
+    if (m.role === "user" || turns.length === 0) turns.push([m]);
+    else turns[turns.length - 1].push(m);
+  }
+  return turns.filter((t) => t.length > 0);
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+function worklogSummaryText(workParts: ApiPart[]): string {
+  const names: string[] = [];
+  for (const p of workParts) {
+    if (p.type === "tool") names.push(String(p.tool || "tool"));
+    else if (p.type === "reasoning") names.push("reasoning");
+    else names.push(String(p.type || "part"));
+  }
+  const uniq = [...new Set(names)].slice(0, 5);
+  const tools = uniq.length ? ` — ${uniq.join(", ")}` : "";
+  return `Working log · ${plural(workParts.length, "step")}${tools}`;
+}
+
+function renderTurns(messages: ApiMessage[], terms: string[]): string {
+  const turns = groupIntoTurns(messages);
+  let turnNo = 0;
+  return turns
+    .map((turn) => {
+      const isOpening = turn[0]?.role !== "user";
+      if (!isOpening) turnNo += 1;
+      const html = turn
+        .map((m) => renderMessage(m, terms))
+        .filter(Boolean)
+        .join("");
+      if (!html) return "";
+      const userCount = turn.filter((m) => m.role === "user").length;
+      let answers = 0;
+      let steps = 0;
+      for (const m of turn) {
+        if (m.role !== "assistant") continue;
+        for (const p of m.parts) {
+          if (p.type === "text") {
+            if ((p.text || "").trim()) answers += 1;
+          } else if (p.type !== "step-start" && p.type !== "step-finish") {
+            steps += 1;
+          }
+        }
+      }
+      const meta: string[] = [];
+      if (userCount > 0) meta.push(plural(userCount, "question"));
+      if (answers > 0) meta.push(plural(answers, "answer"));
+      if (steps > 0) meta.push(plural(steps, "step"));
+      return `<section class="turn${isOpening ? " opening" : ""}">
+      <div class="turn-head"><span class="turn-label">${isOpening ? "Opening" : `Turn ${turnNo}`}</span>
+      ${meta.length ? `<span class="turn-meta">${esc(meta.join(" · "))}</span>` : ""}</div>
+      ${html}</section>`;
+    })
+    .join("");
+}
+
+function renderMessage(m: ApiMessage, terms: string[]): string {
+  const head = `<div class="msg-head"><span class="role ${esc(m.role)}">${esc(m.role)}</span>
+      <span class="time">${fmtTime(m.time_created)}</span>
+      ${m.tokens ? `<span class="time">tok ${m.tokens.total == null ? "" : Number(m.tokens.total).toLocaleString("en-US")}</span>` : ""}</div>`;
+  if (m.role === "assistant") {
+    const answerHtml = m.parts
+      .filter((p) => p.type === "text" && (p.text || "").trim())
+      .map((p) => renderAnswerPart(p, terms))
+      .filter(Boolean)
+      .join("");
+    const workParts = m.parts.filter((p) => {
+      if (
+        p.type === "text" ||
+        p.type === "step-start" ||
+        p.type === "step-finish"
+      )
+        return false;
+      if (p.type === "reasoning" && !(p.text || "").trim()) return false;
+      return true;
+    });
+    const workHtml = workParts
+      .map((p) => renderWorkPart(p, terms))
+      .filter(Boolean)
+      .join("");
+    if (!answerHtml && !workHtml) return "";
+    // 回答なし（作業のみ）のメッセージは行数を食うため、
+    // msg-headと作業ログ概要を1行に合体させ、その行自体を開閉スイッチにする
+    if (!answerHtml) {
+      return `<details class="msg assistant-msg work-only"><summary class="msg-head"><span class="role ${esc(m.role)}">${esc(m.role)}</span>
+      <span class="time">${fmtTime(m.time_created)}</span>
+      ${m.tokens ? `<span class="time">tok ${m.tokens.total == null ? "" : Number(m.tokens.total).toLocaleString("en-US")}</span>` : ""}
+      <span class="work-summary">${esc(worklogSummaryText(workParts))}</span></summary><div class="worklog-body">${workHtml}</div></details>`;
+    }
+    const worklog = workHtml
+      ? `<details class="part worklog"><summary>${esc(worklogSummaryText(workParts))}</summary><div class="worklog-body">${workHtml}</div></details>`
+      : "";
+    return `<div class="msg assistant-msg">${head}${answerHtml}${worklog}</div>`;
+  }
+  if (m.role === "user") {
+    const parts = m.parts
+      .map((p) => renderPart(p, terms, m.role))
+      .filter(Boolean)
+      .join("");
+    if (!parts) return "";
+    return `<div class="msg user-msg">${head}${parts}</div>`;
+  }
+  if (m.role !== "assistant") {
+    const parts = m.parts
+      .map((p) => renderPart(p, terms, m.role))
+      .filter(Boolean)
+      .join("");
+    if (!parts) return "";
+    return `<div class="msg">${head}${parts}</div>`;
+  }
+  return "";
+}
+
+function renderAnswerPart(p: ApiPart, terms: string[]): string {
+  return `<div class="part answer"><div class="part-head answer-head">Answer</div><div class="part-body prose">${renderProse(p.text || "", terms)}${p.truncated ? `<div class="muted">… (${Number(p.fullLength || 0).toLocaleString("en-US")} chars total, truncated)</div>` : ""}</div></div>`;
+}
+
+function renderPart(p: ApiPart, terms: string[], role = "unknown"): string {
   if (p.type === "step-start" || p.type === "step-finish") return "";
   if (p.type === "text" || p.type === "reasoning") {
     if (p.type === "reasoning") {
-      if (!(p.text || "").trim()) return "";
-      return `<details class="part"><summary>Reasoning (click to expand)</summary><div class="part-body prose">${renderProse(p.text || "", terms)}</div></details>`;
+      return renderWorkPart(p, terms);
     }
-    return `<div class="part"><div class="part-body prose">${renderProse(p.text || "", terms)}${p.truncated ? `<div class="muted">… (${Number(p.fullLength || 0).toLocaleString("en-US")} chars total, truncated)</div>` : ""}</div></div>`;
+    if (role === "assistant") return renderAnswerPart(p, terms);
+    if (!(p.text || "").trim() && !p.truncated) return "";
+    return `<div class="part question"><div class="part-body prose">${renderProse(p.text || "", terms)}${p.truncated ? `<div class="muted">… (${Number(p.fullLength || 0).toLocaleString("en-US")} chars total, truncated)</div>` : ""}</div></div>`;
+  }
+  return renderWorkPart(p, terms);
+}
+
+function renderWorkPart(p: ApiPart, terms: string[]): string {
+  if (p.type === "reasoning") {
+    if (!(p.text || "").trim()) return "";
+    return `<details class="part work-item"><summary>Reasoning (click to expand)</summary><div class="part-body prose">${renderProse(p.text || "", terms)}</div></details>`;
   }
   if (p.type === "tool") {
     const label =
@@ -354,17 +480,17 @@ function renderPart(p: ApiPart, terms: string[]): string {
       terms,
     );
     // 巨大セッション対策: ツール詳細は閉じた状態で描画し、レイアウト・ペイントを遅延させる
-    return `<details class="part"><summary>🔧 ${label}</summary>
+    return `<details class="part work-item"><summary>🔧 ${label}</summary>
       <div class="part-head">Input</div><div class="part-body">${inputHtml}</div>
       <div class="part-head">Output${p.outputTruncated ? ` (showing part of ${Number(p.outputFullLength || 0).toLocaleString("en-US")} chars)` : ""}</div><div class="part-body">${outputHtml}</div>
     </details>`;
   }
   if (p.type === "patch") {
-    return `<div class="part"><div class="part-head">patch</div><div class="part-body">${esc((p.files || []).join("\n"))}</div></div>`;
+    return `<div class="part work-item"><div class="part-head">patch</div><div class="part-body">${esc((p.files || []).join("\n"))}</div></div>`;
   }
   if (p.type === "compaction")
-    return `<div class="part"><div class="part-head">compaction</div></div>`;
-  return `<div class="part"><div class="part-head">${esc(p.type)}</div><div class="part-body">${esc(p.rawText || "")}</div></div>`;
+    return `<div class="part work-item"><div class="part-head">compaction</div></div>`;
+  return `<div class="part work-item"><div class="part-head">${esc(p.type)}</div><div class="part-body">${esc(p.rawText || "")}</div></div>`;
 }
 
 $("prevPage").addEventListener("click", () => {
@@ -393,6 +519,22 @@ $("sessionFilter").addEventListener("input", () => {
     state.offset = 0;
     loadSessions();
   }, 300);
+});
+// DB からの手動リロード（引っ張り更新の代わり）。ページ全体はリロードしない
+$("reloadBtn").addEventListener("click", async () => {
+  const btn = $button("reloadBtn");
+  btn.disabled = true;
+  try {
+    await loadProjects();
+    // loadProjects が option を作り直すため、選択中のプロジェクトを復元する
+    const sel = $select("projectFilter");
+    sel.value = state.project;
+    if (sel.value !== state.project) state.project = "";
+    state.offset = 0;
+    await loadSessions();
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 // ---------- 全文検索 ----------
@@ -484,7 +626,7 @@ async function loadTimeline() {
     const row = document.createElement("div");
     row.className = `day-row${state.timelineDay === d.date ? " selected" : ""}`;
     const pct = Math.round((d.messages / maxMsg) * 100);
-    row.innerHTML = `<div><strong>${esc(d.date)}</strong></div>
+    row.innerHTML = `<div><strong>${esc(fmtDayWithWeekday(d.date))}</strong></div>
       <div class="bar"><div style="width:${pct}%"></div></div>
       <div class="muted">${fmtCount(d.sessions)} sessions · ${fmtCount(d.messages)} messages · ${esc(fmtCost(d.cost || 0))}</div>`;
     row.title = (d.titles || []).join(" / ");
@@ -551,6 +693,38 @@ function moveNav(dir: 1 | -1): void {
 }
 $("navUp").addEventListener("click", () => moveNav(-1));
 $("navDown").addEventListener("click", () => moveNav(1));
+
+// 手動スクロールにカウンターを追従させる（スクロールスパイ）。
+// moveNav の着地点（上端 -12px）より少し余裕を持たせ、上端付近の往復でちらつかないよう 80px とする
+const NAV_SYNC_OFFSET = 80;
+let navSyncQueued = false;
+function syncNavFromScroll(): void {
+  if (navAnchors.length === 0) return;
+  const container = $("sessionDetail");
+  const containerTop = container.getBoundingClientRect().top;
+  const tops = navAnchors.map(
+    (el) => el.getBoundingClientRect().top - containerTop,
+  );
+  const idx = resolveNavIndex(tops, NAV_SYNC_OFFSET);
+  if (idx !== navPos) {
+    navPos = idx;
+    updateNav();
+  }
+}
+function requestNavSync(): void {
+  if (navSyncQueued) return;
+  navSyncQueued = true;
+  requestAnimationFrame(() => {
+    navSyncQueued = false;
+    syncNavFromScroll();
+  });
+}
+$("sessionDetail").addEventListener("scroll", requestNavSync, {
+  passive: true,
+});
+// <details> の開閉でアンカー位置がずれるため、レイアウト確定後に再同期する
+$("sessionDetail").addEventListener("toggle", requestNavSync, true);
+window.addEventListener("resize", requestNavSync);
 
 // ---------- 統計 ----------
 async function loadStats(): Promise<void> {
