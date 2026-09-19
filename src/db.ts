@@ -69,31 +69,6 @@ function parseJsonSafe<T>(s: unknown, fallback: T): T {
   }
 }
 
-/** part.data から人間可読テキストを抽出（検索・表示用） */
-export function partDisplayText(partJson: unknown): string {
-  if (!partJson || typeof partJson !== "object") return "";
-  const p = partJson as JsonObj;
-  const t = p.type;
-  if (t === "text" || t === "reasoning")
-    return typeof p.text === "string" ? p.text : "";
-  if (t === "tool") {
-    const st = (p.state ?? {}) as JsonObj;
-    const meta = (st.metadata ?? {}) as JsonObj;
-    const input = st.input ? JSON.stringify(st.input) : "";
-    const title = p.title || st.title || "";
-    const out = st.output || meta.output || "";
-    return [title, input, typeof out === "string" ? out : JSON.stringify(out)]
-      .filter(Boolean)
-      .join("\n");
-  }
-  if (t === "patch") {
-    const files = Array.isArray(p.files) ? p.files : [];
-    return `patch ${files.join(", ")}`;
-  }
-  if (t === "compaction") return "compaction";
-  return "";
-}
-
 const MAX_TEXT = 8000;
 
 function truncate(

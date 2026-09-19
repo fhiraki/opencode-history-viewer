@@ -84,7 +84,21 @@ function searchTerms() {
 
 async function api<T>(path: string): Promise<T> {
   const r = await fetch(path);
-  if (!r.ok) throw new Error(`${path}: ${r.status}`);
+  if (!r.ok) {
+    // サーバー側の { error } を診断用に付加する（巨大ボディ対策で先頭200字まで）
+    let detail = "";
+    try {
+      const text = (await r.text()).slice(0, 200);
+      try {
+        const body = JSON.parse(text) as { error?: unknown };
+        if (typeof body.error === "string" && body.error) detail = body.error;
+        else if (text) detail = text;
+      } catch {
+        if (text) detail = text;
+      }
+    } catch {}
+    throw new Error(`${path}: ${r.status}${detail ? ` ${detail}` : ""}`);
+  }
   return (await r.json()) as T;
 }
 

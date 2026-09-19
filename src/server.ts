@@ -14,34 +14,17 @@ import {
   openDb,
   searchParts,
 } from "./db.ts";
+import {
+  clampInt,
+  clampMs,
+  isValidId,
+  parsePort,
+  parseQuery,
+  resolveStaticPath,
+} from "./shared/validate.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
-
-function parsePort(raw: string | undefined, fallback = 8083): number {
-  const n = Number(raw ?? fallback);
-  if (!Number.isFinite(n) || n <= 0 || n > 65535) return fallback;
-  return Math.floor(n);
-}
-
-/** クエリ数値を有限の非負整数に正規化する（NaN・負数・Infinity を排除） */
-function clampInt(raw: string | null, def: number, max: number): number {
-  const n = Number(raw ?? def);
-  if (!Number.isFinite(n)) return def;
-  return Math.min(Math.max(Math.floor(n), 0), max);
-}
-
-/** ms epoch を有限の非負整数に正規化する（不正値は 0 = 無指定扱い） */
-function clampMs(raw: string | null): number {
-  const n = Number(raw ?? 0);
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return Math.floor(n);
-}
-
-/** セッション/プロジェクト ID として妥当な文字だけ通す（巨大入力・制御文字を排除） */
-function isValidId(id: string): boolean {
-  return id.length >= 1 && id.length <= 128 && /^[A-Za-z0-9_-]+$/.test(id);
-}
 
 const PORT = parsePort(process.env.PORT);
 const DB_PATH = defaultDbPath();
@@ -111,33 +94,11 @@ function sendFile(
   });
 }
 
-/** 静的ファイルの解決。null は不正リクエスト（400）、"forbidden" は 403 を表す */
-function resolveStaticPath(pathname: string): string | null | "forbidden" {
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
-    return null;
-  }
-  if (decoded.includes("\0")) return null;
-  const rel = decoded === "/" ? "/index.html" : decoded;
-  // "." 付きで PUBLIC_DIR 基準に解決し、外側への脱出を封じる
-  const filePath = path.resolve(PUBLIC_DIR, `.${rel}`);
-  if (
-    filePath !== PUBLIC_DIR &&
-    !filePath.startsWith(`${PUBLIC_DIR}${path.sep}`)
-  ) {
-    return "forbidden";
-  }
-  return filePath;
-}
-
-function parseQuery(url: string | undefined): {
-  pathname: string;
-  params: URLSearchParams;
-} {
-  const u = new URL(url ?? "/", "http://localhost");
-  return { pathname: u.pathname, params: u.searchParams };
+/** 静的ファイルの解決（テスト可能な shared 実装への薄いラッパー） */
+function resolveStaticPathForPublic(
+  pathname: string,
+): string | null | "forbidden" {
+  return resolveStaticPath(pathname, PUBLIC_DIR);
 }
 
 const server = http.createServer((req, res) => {
@@ -196,7 +157,7 @@ const server = http.createServer((req, res) => {
 
     // 静的ファイル
     if (req.method === "GET") {
-      const resolved = resolveStaticPath(pathname);
+      const resolved = resolveStaticPathForPublic(pathname);
       if (resolved === null) {
         res.writeHead(400);
         res.end("Bad Request");
@@ -224,12 +185,14 @@ const server = http.createServer((req, res) => {
     res.end("Not Found");
   } catch (e) {
     console.error(`[api] ${pathname} error:`, e);
-    sendJson(res, { error: String(e instanceof Error ? e.message : e) }, 500);
+    // 内部詳細（SQLite エラー等）をクライアントに漏らさない
+    sendJson(res, { error: "internal error" }, 500);
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`[opencode-viewer] http://localhost:${PORT} で起動しました`);
+// LAN 公開を避けるため loopback のみにバインドする（履歴 DB は機密情報を含みうる）
+server.listen(PORT, "127.0.0.1", () => {
+  console.log(`[opencode-viewer] http://127.0.0.1:${PORT} で起動しました`);
   console.log(`[opencode-viewer] 終了は Ctrl+C`);
 });
 
