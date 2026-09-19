@@ -149,12 +149,20 @@ interface SessionDetail {
 }
 interface SearchHit {
   session_id: string;
+  message_id?: string | null;
+  part_id?: string | null;
   session_title: string;
   directory: string;
   part_type: string;
   tool?: string | null;
+  role?: string | null;
   time_created: number;
   snippet: string;
+}
+
+interface SessionTarget {
+  messageId?: string | null;
+  partId?: string | null;
 }
 interface TimelineDay {
   date: string;
@@ -285,7 +293,11 @@ function renderSessionList() {
     el.innerHTML = `<p class="muted">No sessions found.</p>`;
 }
 
-async function selectSession(id: string, highlight = ""): Promise<void> {
+async function selectSession(
+  id: string,
+  highlight = "",
+  target?: SessionTarget,
+): Promise<void> {
   state.selectedId = id;
   state.highlight = highlight;
   renderSessionList();
@@ -298,12 +310,76 @@ async function selectSession(id: string, highlight = ""): Promise<void> {
     );
     if (my !== detailSeq) return;
     el.innerHTML = renderDetail(data, searchTerms());
-    el.scrollTop = 0;
   } catch (e) {
     if (my !== detailSeq) return;
     el.innerHTML = `<p>Failed to load: ${esc(e instanceof Error ? e.message : String(e))}</p>`;
   }
   buildNav();
+  if (my !== detailSeq) return;
+  if (target?.partId || target?.messageId) {
+    scrollToSessionTarget(target);
+  } else {
+    el.scrollTop = 0;
+  }
+}
+
+function findByDataAttr(
+  container: HTMLElement,
+  attr: string,
+  value: string,
+): HTMLElement | null {
+  // ID に記号が混ざっても壊れないようセレクター補間せず総当たりで照合する
+  const els = container.querySelectorAll(`[${attr}]`);
+  for (const el of els) {
+    if (el.getAttribute(attr) === value) return el as HTMLElement;
+  }
+  return null;
+}
+
+function scrollToSessionTarget(target: SessionTarget): void {
+  const container = $("sessionDetail");
+  const partId = target.partId || "";
+  const messageId = target.messageId || "";
+  const found =
+    (partId ? findByDataAttr(container, "data-part-id", partId) : null) ||
+    (messageId
+      ? findByDataAttr(container, "data-message-id", messageId)
+      : null);
+  if (!found) {
+    container.scrollTop = 0;
+    return;
+  }
+  // 閉じた <details>（作業ログ・ツール詳細・回答なしメッセージ）内は
+  // 測定前に全て開く。対象自身が <details> の場合も含む
+  if (found instanceof HTMLDetailsElement && !found.open) found.open = true;
+  let ancestor = found.parentElement;
+  while (ancestor && ancestor !== container) {
+    if (ancestor instanceof HTMLDetailsElement && !ancestor.open) {
+      ancestor.open = true;
+    }
+    ancestor = ancestor.parentElement;
+  }
+  const anchorMsg = found.closest(".msg") as HTMLElement | null;
+  if (anchorMsg) {
+    const idx = navAnchors.indexOf(anchorMsg);
+    if (idx >= 0) {
+      navPos = idx;
+      updateNav();
+    }
+  }
+  const top =
+    found.getBoundingClientRect().top -
+    container.getBoundingClientRect().top +
+    container.scrollTop -
+    12;
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  container.scrollTo({
+    top: Math.max(0, top),
+    behavior: reduce ? "auto" : "smooth",
+  });
+  found.classList.add("hit-flash");
+  window.setTimeout(() => found.classList.remove("hit-flash"), 2400);
+  requestNavSync();
 }
 
 function renderDetail(
@@ -433,13 +509,13 @@ function renderMessage(m: ApiMessage, terms: string[]): string {
     // 回答なし（作業のみ）のメッセージは行数を食うため、
     // msg-headと作業ログ概要を1行に合体させ、その行自体を開閉スイッチにする
     if (!answerHtml) {
-      return `<details class="msg assistant-msg work-only"><summary class="msg-head">${msgHeadInner(m)}
+      return `<details class="msg assistant-msg work-only" data-message-id="${esc(m.id)}"><summary class="msg-head">${msgHeadInner(m)}
       <span class="work-summary">${esc(worklogSummaryText(workParts))}</span></summary><div class="worklog-body">${workHtml}</div></details>`;
     }
     const worklog = workHtml
       ? `<details class="part worklog"><summary>${esc(worklogSummaryText(workParts))}</summary><div class="worklog-body">${workHtml}</div></details>`
       : "";
-    return `<div class="msg assistant-msg">${head}${answerHtml}${worklog}</div>`;
+    return `<div class="msg assistant-msg" data-message-id="${esc(m.id)}">${head}${answerHtml}${worklog}</div>`;
   }
   if (m.role === "user") {
     const parts = m.parts
@@ -447,7 +523,7 @@ function renderMessage(m: ApiMessage, terms: string[]): string {
       .filter(Boolean)
       .join("");
     if (!parts) return "";
-    return `<div class="msg user-msg">${head}${parts}</div>`;
+    return `<div class="msg user-msg" data-message-id="${esc(m.id)}">${head}${parts}</div>`;
   }
   if (m.role !== "assistant") {
     const parts = m.parts
@@ -455,13 +531,13 @@ function renderMessage(m: ApiMessage, terms: string[]): string {
       .filter(Boolean)
       .join("");
     if (!parts) return "";
-    return `<div class="msg">${head}${parts}</div>`;
+    return `<div class="msg" data-message-id="${esc(m.id)}">${head}${parts}</div>`;
   }
   return "";
 }
 
 function renderAnswerPart(p: ApiPart, terms: string[]): string {
-  return `<div class="part answer"><div class="part-head answer-head">Answer</div><div class="part-body prose">${renderProse(p.text || "", terms)}${p.truncated ? `<div class="muted">… (${Number(p.fullLength || 0).toLocaleString("en-US")} chars total, truncated)</div>` : ""}</div></div>`;
+  return `<div class="part answer" data-part-id="${esc(p.id)}"><div class="part-head answer-head">Answer</div><div class="part-body prose">${renderProse(p.text || "", terms)}${p.truncated ? `<div class="muted">… (${Number(p.fullLength || 0).toLocaleString("en-US")} chars total, truncated)</div>` : ""}</div></div>`;
 }
 
 function renderPart(p: ApiPart, terms: string[], role = "unknown"): string {
@@ -472,7 +548,7 @@ function renderPart(p: ApiPart, terms: string[], role = "unknown"): string {
     }
     if (role === "assistant") return renderAnswerPart(p, terms);
     if (!(p.text || "").trim() && !p.truncated) return "";
-    return `<div class="part question"><div class="part-body prose">${renderProse(p.text || "", terms)}${p.truncated ? `<div class="muted">… (${Number(p.fullLength || 0).toLocaleString("en-US")} chars total, truncated)</div>` : ""}</div></div>`;
+    return `<div class="part question" data-part-id="${esc(p.id)}"><div class="part-body prose">${renderProse(p.text || "", terms)}${p.truncated ? `<div class="muted">… (${Number(p.fullLength || 0).toLocaleString("en-US")} chars total, truncated)</div>` : ""}</div></div>`;
   }
   return renderWorkPart(p, terms);
 }
@@ -480,7 +556,7 @@ function renderPart(p: ApiPart, terms: string[], role = "unknown"): string {
 function renderWorkPart(p: ApiPart, terms: string[]): string {
   if (p.type === "reasoning") {
     if (!(p.text || "").trim()) return "";
-    return `<details class="part work-item"><summary>Reasoning (click to expand)</summary><div class="part-body prose">${renderProse(p.text || "", terms)}</div></details>`;
+    return `<details class="part work-item" data-part-id="${esc(p.id)}"><summary>Reasoning (click to expand)</summary><div class="part-body prose">${renderProse(p.text || "", terms)}</div></details>`;
   }
   if (p.type === "tool") {
     const label =
@@ -494,17 +570,17 @@ function renderWorkPart(p: ApiPart, terms: string[]): string {
       terms,
     );
     // 巨大セッション対策: ツール詳細は閉じた状態で描画し、レイアウト・ペイントを遅延させる
-    return `<details class="part work-item"><summary>🔧 ${label}</summary>
+    return `<details class="part work-item" data-part-id="${esc(p.id)}"><summary>🔧 ${label}</summary>
       <div class="part-head">Input</div><div class="part-body">${inputHtml}</div>
       <div class="part-head">Output${p.outputTruncated ? ` (showing part of ${Number(p.outputFullLength || 0).toLocaleString("en-US")} chars)` : ""}</div><div class="part-body">${outputHtml}</div>
     </details>`;
   }
   if (p.type === "patch") {
-    return `<div class="part work-item"><div class="part-head">patch</div><div class="part-body">${esc((p.files || []).join("\n"))}</div></div>`;
+    return `<div class="part work-item" data-part-id="${esc(p.id)}"><div class="part-head">patch</div><div class="part-body">${esc((p.files || []).join("\n"))}</div></div>`;
   }
   if (p.type === "compaction")
-    return `<div class="part work-item"><div class="part-head">compaction</div></div>`;
-  return `<div class="part work-item"><div class="part-head">${esc(p.type)}</div><div class="part-body">${esc(p.rawText || "")}</div></div>`;
+    return `<div class="part work-item" data-part-id="${esc(p.id)}"><div class="part-head">compaction</div></div>`;
+  return `<div class="part work-item" data-part-id="${esc(p.id)}"><div class="part-head">${esc(p.type)}</div><div class="part-body">${esc(p.rawText || "")}</div></div>`;
 }
 
 $("prevPage").addEventListener("click", () => {
@@ -607,14 +683,20 @@ async function loadSearch() {
     d.className = "hit";
     d.tabIndex = 0;
     d.setAttribute("role", "button");
+    const hitRole = typeof h.role === "string" && h.role ? h.role : "unknown";
+    const hitRoleClass =
+      hitRole === "user" || hitRole === "assistant" ? ` ${hitRole}` : "";
     d.innerHTML = `
-      <div><strong>${esc(h.session_title || "(Untitled)")}</strong>
+      <div class="hit-head"><span class="role${hitRoleClass}">${esc(hitRole)}</span><strong>${esc(h.session_title || "(Untitled)")}</strong>
       <span class="muted">[${esc(h.part_type)}${h.tool ? `:${esc(h.tool)}` : ""}] ${fmtTime(h.time_created)}</span></div>
       <div class="muted">${esc(shortenHome(h.directory || "", state.home))}</div>
       <div class="snippet">${highlightHtml(h.snippet || "", terms)}</div>`;
     const openHit = async () => {
       switchTab("sessions");
-      await selectSession(h.session_id, state.searchQ);
+      await selectSession(h.session_id, state.searchQ, {
+        messageId: h.message_id,
+        partId: h.part_id,
+      });
     };
     d.addEventListener("click", openHit);
     d.addEventListener("keydown", (e) => {

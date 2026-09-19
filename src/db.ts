@@ -352,13 +352,14 @@ export function searchParts(
       json_extract(p.data, '$.type') AS ptype,
       json_extract(p.data, '$.tool') AS ptool,
       COALESCE(json_extract(p.data, '$.title'), json_extract(p.data, '$.state.title')) AS ptitle,
+      json_extract(m.data, '$.role') AS mrole,
       substr(json_extract(p.data, '$.text'), 1, 8000) AS t_text,
       substr(json_extract(p.data, '$.state.input'), 1, 4000) AS t_input,
       substr(json_extract(p.data, '$.state.output'), 1, 8000) AS t_output,
       substr(json_extract(p.data, '$.state.metadata.output'), 1, 8000) AS t_metaout,
       substr(json_extract(p.data, '$.files'), 1, 2000) AS t_files,
       s.title AS session_title, s.directory, s.project_id
-    FROM part p JOIN session s ON s.id = p.session_id
+    FROM part p JOIN session s ON s.id = p.session_id LEFT JOIN message m ON m.id = p.message_id
     WHERE ${likeConds} ${projCond}
       AND json_extract(p.data, '$.type') IN ('text','tool','reasoning','patch')
     ORDER BY p.time_created DESC LIMIT ? OFFSET ?`;
@@ -371,6 +372,7 @@ export function searchParts(
     const ptype = typeof r.ptype === "string" ? r.ptype : "unknown";
     const ptool = typeof r.ptool === "string" ? r.ptool : null;
     const ptitle = typeof r.ptitle === "string" ? r.ptitle : null;
+    const role = typeof r.mrole === "string" && r.mrole ? r.mrole : "unknown";
     const str = (v: unknown): string => (typeof v === "string" ? v : "");
     let full = "";
     if (ptype === "text" || ptype === "reasoning") {
@@ -394,6 +396,7 @@ export function searchParts(
       part_type: ptype,
       tool: ptool,
       title: ptitle,
+      role,
       time_created: r.time_created,
       snippet: snippet.text,
       matchPos: snippet.pos,

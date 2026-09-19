@@ -721,6 +721,19 @@ mark {
   border-radius: 4px;
   padding: 0 3px;
 }
+/* 検索結果ジャンプ先の一時ハイライト */
+.part.hit-flash,
+.msg.hit-flash {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(91, 157, 255, 0.25);
+}
+@media (prefers-reduced-motion: reduce) {
+  .part.hit-flash,
+  .msg.hit-flash {
+    box-shadow: none;
+  }
+}
 
 /* ---------- 検索結果 ---------- */
 .results {
@@ -743,6 +756,12 @@ mark {
   border-color: rgba(91, 157, 255, 0.45);
   transform: translateY(-1px);
   box-shadow: var(--shadow);
+}
+.hit-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 .hit .snippet {
   white-space: pre-wrap;
