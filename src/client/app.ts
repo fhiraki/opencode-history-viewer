@@ -134,6 +134,13 @@ interface ApiPart {
   outputTruncated?: boolean;
   outputFullLength?: number;
   files?: string[];
+  agent?: string;
+  command?: string;
+  description?: string;
+  model?: unknown;
+  prompt?: string;
+  promptTruncated?: boolean;
+  promptFullLength?: number;
   rawText?: string;
 }
 interface ApiMessage {
@@ -573,6 +580,24 @@ function renderWorkPart(p: ApiPart, terms: string[]): string {
     return `<details class="part work-item" data-part-id="${esc(p.id)}"><summary>🔧 ${label}</summary>
       <div class="part-head">Input</div><div class="part-body">${inputHtml}</div>
       <div class="part-head">Output${p.outputTruncated ? ` (showing part of ${Number(p.outputFullLength || 0).toLocaleString("en-US")} chars)` : ""}</div><div class="part-body">${outputHtml}</div>
+    </details>`;
+  }
+  if (p.type === "subtask") {
+    const desc = (p.description || "").trim() || "subtask";
+    const model = modelText(p.model);
+    const byline = [
+      p.agent ? `agent ${p.agent}` : "",
+      p.command ? `/${p.command}` : "",
+      model,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const promptHtml = (p.prompt || "").trim()
+      ? renderProse(p.prompt || "", terms)
+      : `<span class="muted">(no prompt)</span>`;
+    // /review・/init 等の指示文は長大なため閉状態で描画する（tool と同様）
+    return `<details class="part work-item" data-part-id="${esc(p.id)}"><summary>🧩 subtask: ${esc(desc)}${byline ? ` (${esc(byline)})` : ""}</summary>
+      <div class="part-head">Prompt${p.promptTruncated ? ` (showing part of ${Number(p.promptFullLength || 0).toLocaleString("en-US")} chars)` : ""}</div><div class="part-body prose">${promptHtml}</div>
     </details>`;
   }
   if (p.type === "patch") {

@@ -54,6 +54,11 @@ interface PartRaw {
   auto?: unknown;
   reason?: unknown;
   time?: unknown;
+  agent?: unknown;
+  command?: unknown;
+  description?: unknown;
+  prompt?: unknown;
+  model?: unknown;
 }
 
 /** LIKE 用エスケープ */
@@ -315,6 +320,19 @@ function normalizePart(row: Row, raw: PartRaw): Record<string, unknown> {
   } else if (raw.type === "patch") {
     base.files = Array.isArray(raw.files) ? raw.files : [];
     base.hash = raw.hash || "";
+  } else if (raw.type === "subtask") {
+    // /review・/init 等のカスタムコマンド実行記録。prompt は指示文本文のため text と同じ caps。
+    const t = truncate(typeof raw.prompt === "string" ? raw.prompt : "");
+    base.agent = typeof raw.agent === "string" ? raw.agent : "";
+    base.command = typeof raw.command === "string" ? raw.command : "";
+    base.description =
+      typeof raw.description === "string" ? raw.description : "";
+    base.model = raw.model ?? null;
+    base.prompt = t.text;
+    if (t.truncated) {
+      base.promptTruncated = true;
+      base.promptFullLength = t.fullLength;
+    }
   } else if (raw.type === "compaction") {
     base.auto = raw.auto;
   } else if (raw.type === "step-start" || raw.type === "step-finish") {
