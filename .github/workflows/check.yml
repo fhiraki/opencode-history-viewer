@@ -6,7 +6,8 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # ubuntu-latest は 26.04 移行中 (actions/runner-images#14748) のため 24.04 にピン留め
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         # 24 は engines の下限、26 はローカル開発版。両方で検証する
