@@ -182,12 +182,22 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// 検索語の正規化（空白分割・空除去・重複除去・長大語切り詰め・最大8語）。
+// スニペット強調・本文マーク・API クエリで共通利用する。
+export function normalizeTerms(input: string | string[]): string[] {
+  const raw = Array.isArray(input)
+    ? input.flatMap((t) => t.split(/\s+/))
+    : input.split(/\s+/);
+  return [...new Set(raw.filter(Boolean).map((t) => t.slice(0, 100)))].slice(
+    0,
+    8,
+  );
+}
+
 // ハイライト済み HTML のタグ部分を避けて検索語だけ <mark> 化する
 export function markTermsHtml(html: string, terms: string[]): string {
   // 長大な検索語は正規表現の爆発を招くため切り詰める
-  const clean = [
-    ...new Set(terms.filter(Boolean).map((t) => t.slice(0, 100))),
-  ].slice(0, 8);
+  const clean = normalizeTerms(terms);
   if (!clean.length) return html;
   const pattern = new RegExp(
     `(${clean.map((t) => escapeRegExp(esc(t))).join("|")})`,
@@ -244,10 +254,10 @@ function mdSanitizeUrl(url: string): string | null {
   const u = url.trim();
   if (!u || /[\s<>]/.test(u)) return null;
   const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(u);
-  if (scheme) {
-    const s = scheme[1].toLowerCase();
-    if (s !== "http" && s !== "https" && s !== "mailto") return null;
-  }
+  // 相対 URL は viewer 内の意図せぬ遷移になるためリンク化しない
+  if (!scheme) return null;
+  const s = scheme[1].toLowerCase();
+  if (s !== "http" && s !== "https" && s !== "mailto") return null;
   return u;
 }
 

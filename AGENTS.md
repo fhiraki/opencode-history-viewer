@@ -24,7 +24,7 @@
 - `node:sqlite` のバインドはスプレッドのみ: `.all(...params)`。配列渡し `.all(arr)` は `Unknown named parameter '0'` で失敗する
 - `part.data` / `message.data` は JSON 文字列。`json_extract(data, '$.type')` で絞り込み、`JSON.parse` は `parseJsonSafe` 経由で行う
 - `substr(p.data,1,N)` を `JSON.parse` すると切断位置で壊れる。断片取得は `json_extract`＋`substr`（例: `substr(json_extract(p.data,'$.text'),1,200)`）で行う
-- 一覧の per-session 取得に全体 `ORDER BY`＋`LIMIT` を使わない（先頭セッションに枠を奪われる＋低速）。`session_id` 索引の効く per-session クエリに分割する
+- 一覧の per-session 取得に全体 `ORDER BY`＋`LIMIT` を使わない（先頭セッションに枠を奪われる＋低速）。`session_id` 索引の効く window 関数で2発（user 先頭＋全体先頭）にバッチ化する。N+1 分割は 50件で約800ms のため避ける
 - `session.model` も JSON 文字列（`{"id","providerID","variant"}`。旧形式はプレーン文字列）。表示は `parseModel` 経由にし、生 JSON を出さない
 - モデル別のコスト集計は message 単位で行う（`session.model` は最終選択モデルのため、マルチモデルセッションの按分に使うと誤集計になる）
 - LIKE 検索は `escapeLike`（`%_\\`）＋ `ESCAPE '\\'` 必須
@@ -48,7 +48,7 @@
 ## UI（`public/`）
 - UI 文言は英語に統一（DB 由来のセッション内容を除く）。数値表示はコンパクト表記（`fmtCount`: k/M/B）。正確値は `title` 属性に `fmtExact`（`en-US` 3 桁区切り）で保持する
 - セッション詳細の構造は `.turn`（1往復）＞ `.msg` ＞ 回答カード（`.part.answer`）＋作業ログ（`details.worklog`）。回答なし assistant は `<details class="msg work-only">`（msg-head 一体型 summary）。`.msg` はやり取りナビ（`buildNav`＋`resolveNavIndex`）のアンカーなので剥がさない。構造変更時はスクロール同期（`toggle`・`resize` での再同期）を確認する
-- シンタックスハイライトは highlight.js（必要言語のみ `highlight.ts` で登録＋esbuild バンドル）。Markdown 描画は marked（GFM）＋自前の安全化（生 HTML 無効化・URL スキーム制限・コード描画は `highlightTokens`）。外部ライブラリ・CDN の利用可
+- シンタックスハイライトは highlight.js（必要言語のみ `highlight.ts` で登録＋esbuild バンドル）。Markdown 描画は marked（GFM）＋自前の安全化（生 HTML 無効化・URL スキーム制限＋相対 URL のリンク化拒否・コード描画は `highlightTokens`）。外部ライブラリ・CDN の利用可
 - タブのスライド式インジケーターは JS で位置計算（`moveTabIndicator`）＋ CSS transition。`resize` と `document.fonts.ready` でも再計算する
 - ページ送りボタンは対象ページがない場合 `disabled` にする（セッション一覧・検索結果とも）。`button:disabled` のスタイルは `style.css` に定義済み
 - ツール詳細・作業ログ等の `<details>` は閉状態で描画する（巨大セッションの描画コスト対策）。`open` を付けない

@@ -16,6 +16,7 @@ import { resolveNavIndex } from "../shared/nav.ts";
 import {
   highlightTokens,
   markTermsHtml,
+  normalizeTerms,
   renderProse,
   toolOutputLang,
 } from "./highlight.ts";
@@ -64,10 +65,9 @@ function $button(id: string): HTMLButtonElement {
 }
 function highlightHtml(text: string, terms: string[]): string {
   let out = esc(text);
-  for (const raw of terms.slice(0, 8)) {
-    if (!raw) continue;
-    // 長大な検索語は正規表現の爆発を招くため切り詰める
-    const e = esc(raw.slice(0, 100)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (const raw of normalizeTerms(terms)) {
+    // 長大な検索語は正規表現の爆発を招くため切り詰める（normalizeTerms 済み）
+    const e = esc(raw).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     try {
       out = out.replace(new RegExp(`(${e})`, "gi"), "<mark>$1</mark>");
     } catch {}
@@ -75,11 +75,7 @@ function highlightHtml(text: string, terms: string[]): string {
   return out;
 }
 function searchTerms() {
-  return (state.highlight || "")
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 8)
-    .map((t) => t.slice(0, 100));
+  return normalizeTerms(state.highlight);
 }
 
 async function api<T>(path: string): Promise<T> {
@@ -269,7 +265,9 @@ function renderSessionList() {
   $("sessionCount").textContent =
     `${fmtCount(state.total)} sessions${state.timelineDay ? ` (${fmtDayWithWeekday(state.timelineDay)})` : ""}`;
   $("pageInfo").textContent =
-    `${fmtCount(state.offset + 1)}–${fmtCount(Math.min(state.offset + state.limit, state.total))} / ${fmtCount(state.total)}`;
+    state.total === 0
+      ? `0 / 0`
+      : `${fmtCount(state.offset + 1)}–${fmtCount(Math.min(state.offset + state.limit, state.total))} / ${fmtCount(state.total)}`;
   $button("prevPage").disabled = state.offset <= 0;
   $button("nextPage").disabled = state.offset + state.limit >= state.total;
   for (const s of state.sessions) {
@@ -403,10 +401,14 @@ function renderTurns(messages: ApiMessage[], terms: string[]): string {
     .join("");
 }
 
-function renderMessage(m: ApiMessage, terms: string[]): string {
-  const head = `<div class="msg-head"><span class="role ${esc(m.role)}">${esc(m.role)}</span>
+function msgHeadInner(m: ApiMessage): string {
+  return `<span class="role ${esc(m.role)}">${esc(m.role)}</span>
       <span class="time">${fmtTime(m.time_created)}</span>
-      ${m.tokens ? `<span class="time">tok ${m.tokens.total == null ? "" : Number(m.tokens.total).toLocaleString("en-US")}</span>` : ""}</div>`;
+      ${m.tokens ? `<span class="time">tok ${m.tokens.total == null ? "" : Number(m.tokens.total).toLocaleString("en-US")}</span>` : ""}`;
+}
+
+function renderMessage(m: ApiMessage, terms: string[]): string {
+  const head = `<div class="msg-head">${msgHeadInner(m)}</div>`;
   if (m.role === "assistant") {
     const answerHtml = m.parts
       .filter((p) => p.type === "text" && (p.text || "").trim())
@@ -431,9 +433,7 @@ function renderMessage(m: ApiMessage, terms: string[]): string {
     // 回答なし（作業のみ）のメッセージは行数を食うため、
     // msg-headと作業ログ概要を1行に合体させ、その行自体を開閉スイッチにする
     if (!answerHtml) {
-      return `<details class="msg assistant-msg work-only"><summary class="msg-head"><span class="role ${esc(m.role)}">${esc(m.role)}</span>
-      <span class="time">${fmtTime(m.time_created)}</span>
-      ${m.tokens ? `<span class="time">tok ${m.tokens.total == null ? "" : Number(m.tokens.total).toLocaleString("en-US")}</span>` : ""}
+      return `<details class="msg assistant-msg work-only"><summary class="msg-head">${msgHeadInner(m)}
       <span class="work-summary">${esc(worklogSummaryText(workParts))}</span></summary><div class="worklog-body">${workHtml}</div></details>`;
     }
     const worklog = workHtml
@@ -576,34 +576,52 @@ async function loadSearch() {
     offset: String(state.searchOffset),
     project: state.project,
   });
-  const data = await api<{ hits: SearchHit[]; total: number; home?: string }>(
-    `/api/search?${params}`,
-  );
+  let data: { hits: SearchHit[]; total: number; home?: string };
+  try {
+    data = await api<{ hits: SearchHit[]; total: number; home?: string }>(
+      `/api/search?${params}`,
+    );
+  } catch (e) {
+    if (my !== searchSeq) return;
+    box.innerHTML = `<p>Search failed: ${esc(e instanceof Error ? e.message : String(e))}</p>`;
+    $("searchCount").textContent = "";
+    $("searchPageInfo").textContent = "";
+    $button("searchPrev").disabled = true;
+    $button("searchNext").disabled = true;
+    return;
+  }
   if (my !== searchSeq) return;
   state.searchTotal = data.total;
   if (data.home) state.home = data.home;
   $("searchCount").textContent = `${fmtCount(data.total)} results`;
   $("searchPageInfo").textContent =
-    `${fmtCount(state.searchOffset + 1)}–${fmtCount(Math.min(state.searchOffset + 50, data.total))} / ${fmtCount(data.total)}`;
+    data.total === 0
+      ? `0 / 0`
+      : `${fmtCount(state.searchOffset + 1)}–${fmtCount(Math.min(state.searchOffset + 50, data.total))} / ${fmtCount(data.total)}`;
   $button("searchPrev").disabled = state.searchOffset <= 0;
   $button("searchNext").disabled = state.searchOffset + 50 >= data.total;
   box.innerHTML = "";
-  const terms = state.searchQ
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 8)
-    .map((t) => t.slice(0, 100));
+  const terms = normalizeTerms(state.searchQ);
   for (const h of data.hits) {
     const d = document.createElement("div");
     d.className = "hit";
+    d.tabIndex = 0;
+    d.setAttribute("role", "button");
     d.innerHTML = `
       <div><strong>${esc(h.session_title || "(Untitled)")}</strong>
       <span class="muted">[${esc(h.part_type)}${h.tool ? `:${esc(h.tool)}` : ""}] ${fmtTime(h.time_created)}</span></div>
       <div class="muted">${esc(shortenHome(h.directory || "", state.home))}</div>
       <div class="snippet">${highlightHtml(h.snippet || "", terms)}</div>`;
-    d.addEventListener("click", async () => {
+    const openHit = async () => {
       switchTab("sessions");
       await selectSession(h.session_id, state.searchQ);
+    };
+    d.addEventListener("click", openHit);
+    d.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openHit();
+      }
     });
     box.appendChild(d);
   }
@@ -627,9 +645,13 @@ async function loadTimeline() {
   const el = $("timeline");
   el.innerHTML = `<p class="muted">Loading…</p>`;
   const params = new URLSearchParams({ project: state.project });
-  const { days } = await api<{ days: TimelineDay[] }>(
-    `/api/timeline?${params}`,
-  );
+  let days: TimelineDay[];
+  try {
+    ({ days } = await api<{ days: TimelineDay[] }>(`/api/timeline?${params}`));
+  } catch (e) {
+    el.innerHTML = `<p>Failed to load timeline: ${esc(e instanceof Error ? e.message : String(e))}</p>`;
+    return;
+  }
   el.innerHTML = "";
   if (!days.length) {
     el.innerHTML = `<p class="muted">No data.</p>`;
@@ -742,7 +764,7 @@ window.addEventListener("resize", requestNavSync);
 
 // ---------- 統計 ----------
 async function loadStats(): Promise<void> {
-  const s = await api<{
+  let s: {
     sessionCount: number;
     messageCount: number;
     partCount: number;
@@ -750,7 +772,22 @@ async function loadStats(): Promise<void> {
     perProject: PerProjectRow[];
     perModel: PerModelRow[];
     toolUsage: ToolUsageRow[];
-  }>(`/api/stats`);
+  };
+  try {
+    s = await api<{
+      sessionCount: number;
+      messageCount: number;
+      partCount: number;
+      tokens: { cost: number; ti: number; tout: number };
+      perProject: PerProjectRow[];
+      perModel: PerModelRow[];
+      toolUsage: ToolUsageRow[];
+    }>(`/api/stats`);
+  } catch (e) {
+    $("statsCards").innerHTML =
+      `<p>Failed to load stats: ${esc(e instanceof Error ? e.message : String(e))}</p>`;
+    return;
+  }
   $("statsCards").innerHTML = `
     <div class="card" title="${fmtExact(s.sessionCount)}"><div class="muted">Sessions</div><div class="num">${fmtCount(s.sessionCount)}</div></div>
     <div class="card" title="${fmtExact(s.messageCount)}"><div class="muted">Messages</div><div class="num">${fmtCount(s.messageCount)}</div></div>
@@ -785,9 +822,15 @@ async function loadStats(): Promise<void> {
       .join("")}</table>`;
 }
 
-// 初期化
-await loadProjects();
-await loadSessions();
+// 初期化（サーバー不在でも真っ白にせず理由を表示する）
+try {
+  await loadProjects();
+  await loadSessions();
+} catch (e) {
+  const msg = `<p>Failed to connect to the server: ${esc(e instanceof Error ? e.message : String(e))}</p>`;
+  $("sessionList").innerHTML = msg;
+  $("sessionDetail").innerHTML = msg;
+}
 moveTabIndicator();
 window.addEventListener("resize", moveTabIndicator);
 if (document.fonts?.ready) {

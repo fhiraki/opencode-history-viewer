@@ -4,6 +4,7 @@ import {
   highlightTokens,
   markTermsHtml,
   normalizeLang,
+  normalizeTerms,
   renderProse,
   toolOutputLang,
 } from "../src/client/highlight.ts";
@@ -148,5 +149,22 @@ describe("toolOutputLang", () => {
     assert.equal(toolOutputLang({ tool: "bash", input: "{}" }), "plaintext");
     assert.equal(toolOutputLang({ tool: "read", input: "!!!" }), "plaintext");
     assert.equal(toolOutputLang({}), "plaintext");
+  });
+});
+
+describe("normalizeTerms", () => {
+  it("splits, dedups, truncates and caps terms", () => {
+    assert.deepEqual(normalizeTerms("  foo  bar foo "), ["foo", "bar"]);
+    assert.deepEqual(normalizeTerms(["a b", "b c"]), ["a", "b", "c"]);
+    assert.deepEqual(normalizeTerms(""), []);
+    assert.equal(normalizeTerms("x".repeat(150))[0]?.length, 100);
+    assert.equal(normalizeTerms("0 1 2 3 4 5 6 7 8 9").length, 8);
+  });
+});
+
+describe("renderProse links", () => {
+  it("renders relative URLs as plain text without links", () => {
+    assert.equal(renderProse("[rel](./other.md)", []).includes("<a"), false);
+    assert.equal(renderProse("[frag](#sec)", []).includes("<a"), false);
   });
 });

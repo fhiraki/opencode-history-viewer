@@ -149,36 +149,55 @@ export function listSessions(
 
   // プレビュー: 各セッションの最初の user text（なければ最初の text）
   // 全セッション一括の ORDER BY + LIMIT では先頭セッションに枠を奪われるため、
-  // session_id の索引が効く per-session クエリ（各最大10件）に分割する。
+  // session_id の索引が効く window 関数で2発（user 先頭＋全体先頭）にまとめる。
+  // N+1（50件で約800ms）のラウンドトリップを避けるためのバッチ化。
   // substr(p.data,1,N) を JSON.parse すると切断位置で壊れるため、
   // json_extract で text/role だけ抜き出してから substr する。
   if (sessions.length) {
-    const previewStmt = db.prepare(
-      `SELECT json_extract(m.data, '$.role') AS role,
-        substr(json_extract(p.data, '$.text'), 1, 200) AS text
-       FROM part p JOIN message m ON m.id = p.message_id
-       WHERE p.session_id = ? AND json_extract(p.data, '$.type') = 'text'
-       ORDER BY p.time_created ASC LIMIT 10`,
-    );
+    const ids = sessions.map((s) => String(s.id));
+    const placeholders = ids.map(() => "?").join(",");
+    const firstTextByRole = (userOnly: boolean): Map<string, string> => {
+      // フォールバック側は role 判定が要らないため message 結合自体を省く
+      const join = userOnly ? "JOIN message m ON m.id = p.message_id" : "";
+      const roleCond = userOnly
+        ? "AND json_extract(m.data, '$.role') = 'user'"
+        : "";
+      const rows = db
+        .prepare(
+          `SELECT session_id, text FROM (
+             SELECT p.session_id AS session_id,
+               substr(json_extract(p.data, '$.text'), 1, 200) AS text,
+               ROW_NUMBER() OVER (
+                 PARTITION BY p.session_id ORDER BY p.time_created ASC, p.id ASC
+               ) AS rn
+             FROM part p ${join}
+             WHERE p.session_id IN (${placeholders})
+               AND json_extract(p.data, '$.type') = 'text'
+               AND typeof(json_extract(p.data, '$.text')) = 'text'
+               AND json_extract(p.data, '$.text') <> ''
+               ${roleCond}
+           ) WHERE rn = 1`,
+        )
+        .all(...ids);
+      const map = new Map<string, string>();
+      for (const r of rows) {
+        if (typeof r.text === "string" && r.text) {
+          map.set(String(r.session_id), r.text);
+        }
+      }
+      return map;
+    };
+    let userMap = new Map<string, string>();
+    let fallbackMap = new Map<string, string>();
+    try {
+      userMap = firstTextByRole(true);
+      fallbackMap = firstTextByRole(false);
+    } catch {
+      // プレビュー失敗は一覧自体を壊さない（空文字のまま）
+    }
     for (const s of sessions) {
       const sid = String(s.id);
-      let fallback = "";
-      let firstUser = "";
-      try {
-        const rows = previewStmt.all(sid);
-        for (const r of rows) {
-          const text = typeof r.text === "string" ? r.text : "";
-          if (!text) continue;
-          if (!fallback) fallback = text;
-          if (r.role === "user") {
-            firstUser = text;
-            break;
-          }
-        }
-      } catch {
-        // プレビュー失敗は一覧自体を壊さない（空文字のまま）
-      }
-      s.preview = firstUser || fallback || "";
+      s.preview = userMap.get(sid) || fallbackMap.get(sid) || "";
     }
   }
   return { total, sessions };
@@ -269,7 +288,12 @@ function normalizePart(row: Row, raw: PartRaw): Record<string, unknown> {
     }
   } else if (raw.type === "tool") {
     const st = (raw.state ?? {}) as NonNullable<PartRaw["state"]>;
-    const inputStr = st.input ? JSON.stringify(st.input) : "";
+    const inputStr =
+      typeof st.input === "string"
+        ? st.input
+        : st.input
+          ? JSON.stringify(st.input)
+          : "";
     let outputStr = "";
     if (typeof st.output === "string") outputStr = st.output;
     else if (st.output != null) outputStr = JSON.stringify(st.output);
@@ -386,16 +410,17 @@ function makeSnippet(
   if (!full) return { text: "", pos: -1 };
   const lower = full.toLowerCase();
   let best = -1;
+  let bestLen = 0;
   for (const t of lowerTerms) {
     const i = lower.indexOf(t);
-    if (i !== -1 && (best === -1 || i < best)) best = i;
+    if (i !== -1 && (best === -1 || i < best)) {
+      best = i;
+      bestLen = t.length;
+    }
   }
   if (best === -1) return { text: full.slice(0, radius * 2), pos: -1 };
   const start = Math.max(0, best - radius);
-  const end = Math.min(
-    full.length,
-    best + radius + (lowerTerms[0]?.length || 0),
-  );
+  const end = Math.min(full.length, best + radius + bestLen);
   const prefix = start > 0 ? "…" : "";
   return { text: prefix + full.slice(start, end), pos: best - start };
 }

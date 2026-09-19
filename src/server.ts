@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -28,6 +29,8 @@ const PUBLIC_DIR = path.join(__dirname, "..", "public");
 
 const PORT = parsePort(process.env.PORT);
 const DB_PATH = defaultDbPath();
+// リクエスト毎の getpwuid を避けるため起動時に確定する
+const HOME = os.homedir();
 
 let db: DatabaseSync;
 try {
@@ -101,7 +104,7 @@ function resolveStaticPathForPublic(
   return resolveStaticPath(pathname, PUBLIC_DIR);
 }
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const { pathname, params } = parseQuery(req.url);
 
   try {
@@ -121,7 +124,7 @@ const server = http.createServer((req, res) => {
         to: clampMs(params.get("to")),
         sort: params.get("sort") || "updated",
       });
-      return sendJson(res, { ...result, home: os.homedir() });
+      return sendJson(res, { ...result, home: HOME });
     }
     if (req.method === "GET" && pathname.startsWith("/api/session/")) {
       let id: string;
@@ -142,7 +145,7 @@ const server = http.createServer((req, res) => {
         offset: clampInt(params.get("offset"), 0, 1_000_000),
         project: (params.get("project") || "").slice(0, 128),
       });
-      return sendJson(res, { ...result, home: os.homedir() });
+      return sendJson(res, { ...result, home: HOME });
     }
     if (req.method === "GET" && pathname === "/api/timeline") {
       return sendJson(res, {
@@ -170,7 +173,7 @@ const server = http.createServer((req, res) => {
       }
       let stat: fs.Stats | null = null;
       try {
-        stat = fs.statSync(resolved);
+        stat = await fsp.stat(resolved);
       } catch {
         stat = null;
       }
