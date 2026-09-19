@@ -4,7 +4,7 @@
 - `src/server.ts` … API（標準 `node:http` のみ、Express 不使用）。esbuild で `dist/` にバンドルして実行
 - `src/db.ts` … SQLite アクセス層（全クエリはここ）
 - `src/client/` … UI（`app.ts` + `highlight.ts`）。esbuild で `public/dist/` にバンドル
-- `src/shared/` … DOM 非依存の純粋関数（整形系）。`test/` から直接 import される
+- `src/shared/` … DOM 非依存の純粋関数（`format.ts` 整形系＋`nav.ts` ナビ判定）。`test/` から直接 import される
 - `public/` … `index.html` + `style.css`（手書き）
 - `public/dist/` と `dist/` はビルド成果物で編集禁止。修正は必ず `src/` 側に行う
 
@@ -28,12 +28,13 @@
 - `session.model` も JSON 文字列（`{"id","providerID","variant"}`。旧形式はプレーン文字列）。表示は `parseModel` 経由にし、生 JSON を出さない
 - モデル別のコスト集計は message 単位で行う（`session.model` は最終選択モデルのため、マルチモデルセッションの按分に使うと誤集計になる）
 - LIKE 検索は `escapeLike`（`%_\\`）＋ `ESCAPE '\\'` 必須
-- 巨大出力を返さない caps を維持する: 本文 8000・tool 入力 4000/出力 8000・検索は `json_extract` 抜き出し＋`substr`（text 8000・input 4000・output/meta 8000・files 2000）。617発言セッションで既に約1.7MBになる
+- 巨大出力を返さない caps を維持する: 本文 8000・tool 入力 4000/出力 8000・検索は `json_extract` 抜き出し＋`substr`（text 8000・input 4000・output/meta 8000・files 2000）。1165発言セッションで約5MBになる
 
 ## 検証（Biome + tsc + node:test）
 - `npm run check` が正（Biome＋`tsc --noEmit`＋`node --test test/*.test.ts`）。修正は `npm run format`
 - Node 24 は `--test` のディレクトリ指定不可のため glob 形式を維持する（CI は 24/26 マトリクス）。`engines >= 24` の下限保証を崩さない
 - 日付表示のテストは固定 epoch で assert しない（CI は UTC で日付がずれる）。`new Date(2026, 8, 18, 12, 0)` のようにローカル時刻で組み立てる
+- テストに個人のパスをハードコードしない（public リポジトリのため）。ホーム配下は `os.homedir()` から組み立てる
 - `biome.json` はスペースインデント（既存コードに合わせている。tab に変えない）
 - `tsconfig` の `types: ["node"]` は消さない（外すと `node:sqlite` 等の型解決が壊れる）
 - TS は消去可能構文のみ（`erasableSyntaxOnly`）。import は `.ts` 拡張子付きで書く
@@ -46,7 +47,8 @@
 
 ## UI（`public/`）
 - UI 文言は英語に統一（DB 由来のセッション内容を除く）。数値表示はコンパクト表記（`fmtCount`: k/M/B）。正確値は `title` 属性に `fmtExact`（`en-US` 3 桁区切り）で保持する
+- セッション詳細の構造は `.turn`（1往復）＞ `.msg` ＞ 回答カード（`.part.answer`）＋作業ログ（`details.worklog`）。回答なし assistant は `<details class="msg work-only">`（msg-head 一体型 summary）。`.msg` はやり取りナビ（`buildNav`＋`resolveNavIndex`）のアンカーなので剥がさない。構造変更時はスクロール同期（`toggle`・`resize` での再同期）を確認する
 - シンタックスハイライトは highlight.js（必要言語のみ `highlight.ts` で登録＋esbuild バンドル）。Markdown 描画は marked（GFM）＋自前の安全化（生 HTML 無効化・URL スキーム制限・コード描画は `highlightTokens`）。外部ライブラリ・CDN の利用可
 - タブのスライド式インジケーターは JS で位置計算（`moveTabIndicator`）＋ CSS transition。`resize` と `document.fonts.ready` でも再計算する
 - ページ送りボタンは対象ページがない場合 `disabled` にする（セッション一覧・検索結果とも）。`button:disabled` のスタイルは `style.css` に定義済み
-- ツール詳細の `<details>` は閉状態で描画する（巨大セッションの描画コスト対策）。`open` を付けない
+- ツール詳細・作業ログ等の `<details>` は閉状態で描画する（巨大セッションの描画コスト対策）。`open` を付けない
