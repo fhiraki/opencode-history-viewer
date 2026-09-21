@@ -117,6 +117,21 @@ describe("searchParts snippet", () => {
       db.close();
     }
   });
+  it("keeps the total when the requested page is beyond the hits", () => {
+    const db = fixture();
+    try {
+      // offset 超過で 0 件でも COUNT(*) OVER () の値が取れないケースを数え直して返す
+      const { total, hits } = searchParts(db, {
+        q: "alpha",
+        offset: 50,
+        limit: 50,
+      });
+      assert.equal(total, 1);
+      assert.equal(hits.length, 0);
+    } finally {
+      db.close();
+    }
+  });
   it("treats % and _ literally via escapeLike", () => {
     const db = fixture();
     try {
@@ -169,6 +184,83 @@ describe("getStats", () => {
       const tools = new Map(stats.toolUsage.map((t) => [String(t.tool), t.c]));
       assert.equal(tools.get("read"), 1);
       assert.equal(tools.get("bash"), 1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("extracts tool names from the data head and falls back for odd shapes", () => {
+    const db = fixture();
+    try {
+      const part = db.prepare(
+        `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+      // 旧形式で tool キーが先頭に無い行（json_extract フォールバック対象）
+      part.run(
+        "t1",
+        "m4",
+        "s3",
+        10,
+        10,
+        '{"type":"tool","callID":"c1","state":{},"tool":"grep"}',
+      );
+      // tool キー自体が無い行は (unknown) に寄せる
+      part.run("t2", "m4", "s3", 11, 11, '{"type":"tool","callID":"c2"}');
+      // 本文中に JSON 断片（エスケープ済み）を含む text は tool として数えない
+      part.run(
+        "t3",
+        "m4",
+        "s3",
+        12,
+        12,
+        JSON.stringify({
+          type: "text",
+          text: 'example: {"type":"tool","tool":"fake"}',
+        }),
+      );
+      const tools = new Map(
+        getStats(db).toolUsage.map((t) => [String(t.tool), t.c]),
+      );
+      assert.equal(tools.get("read"), 1);
+      assert.equal(tools.get("bash"), 1);
+      assert.equal(tools.get("grep"), 1);
+      assert.equal(tools.get("(unknown)"), 1);
+      assert.equal(tools.has("fake"), false);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("aggregates per-model stats from assistant messages only", () => {
+    const db = fixture();
+    try {
+      const msg = db.prepare(
+        `INSERT INTO message (id, session_id, time_created, time_updated, data)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      msg.run(
+        "m5",
+        "s3",
+        5,
+        5,
+        '{"role":"assistant","providerID":"prov","modelID":"mm","cost":0.5,' +
+          '"tokens":{"input":10,"output":4,"reasoning":1},' +
+          '"time":{"created":100,"completed":300}}',
+      );
+      // ネストした role:assistant は prefilter で拾われても json_extract の role で除外する
+      msg.run("m6", "s3", 6, 6, '{"role":"user","extra":{"role":"assistant"}}');
+      const rows = getStats(db).perModel;
+      const byId = new Map(rows.map((r) => [String(r.id), r]));
+      assert.equal(byId.get("mm")?.provider, "prov");
+      assert.equal(byId.get("mm")?.messages, 1);
+      assert.equal(byId.get("mm")?.cost, 0.5);
+      assert.equal(byId.get("mm")?.ti, 10);
+      assert.equal(byId.get("mm")?.tout, 4);
+      assert.equal(byId.get("mm")?.tr, 1);
+      assert.equal(byId.get("mm")?.activeMs, 200);
+      const total = rows.reduce((n, r) => n + Number(r.messages), 0);
+      assert.equal(total, 3); // m2 / m3 / m5
     } finally {
       db.close();
     }

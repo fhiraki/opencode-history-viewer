@@ -572,18 +572,12 @@ function renderWorkPart(p: ApiPart, terms: string[]): string {
   if (p.type === "tool") {
     const label =
       `${esc(p.tool)} ${esc(p.title || "")} ${esc(p.status || "")}`.trim();
-    const inputHtml = markTermsHtml(
-      highlightTokens(prettyJson(p.input || ""), "json"),
-      terms,
-    );
-    const outputHtml = markTermsHtml(
-      highlightTokens((p.output || "").slice(0, 8000), toolOutputLang(p)),
-      terms,
-    );
-    // 巨大セッション対策: ツール詳細は閉じた状態で描画し、レイアウト・ペイントを遅延させる
+    // 巨大セッション対策: ツール詳細は閉じた状態で描画し、ハイライトも
+    // details を開いた時に遅延実行する（全ツール出力を一括で highlight.js に
+    // 通すと数秒かかる）。lazy-hl の textContent を hydrate 時に渡す
     return `<details class="part work-item" data-part-id="${esc(p.id)}"><summary>🔧 ${label}</summary>
-      <div class="part-head">Input</div><div class="part-body">${inputHtml}</div>
-      <div class="part-head">Output${p.outputTruncated ? ` (showing part of ${Number(p.outputFullLength || 0).toLocaleString("en-US")} chars)` : ""}</div><div class="part-body">${outputHtml}</div>
+      <div class="part-head">Input</div><div class="part-body lazy-hl" data-lang="json">${esc(prettyJson(p.input || ""))}</div>
+      <div class="part-head">Output${p.outputTruncated ? ` (showing part of ${Number(p.outputFullLength || 0).toLocaleString("en-US")} chars)` : ""}</div><div class="part-body lazy-hl" data-lang="${esc(toolOutputLang(p))}">${esc((p.output || "").slice(0, 8000))}</div>
     </details>`;
   }
   if (p.type === "subtask") {
@@ -610,6 +604,24 @@ function renderWorkPart(p: ApiPart, terms: string[]): string {
   if (p.type === "compaction")
     return `<div class="part work-item" data-part-id="${esc(p.id)}"><div class="part-head">compaction</div></div>`;
   return `<div class="part work-item" data-part-id="${esc(p.id)}"><div class="part-head">${esc(p.type)}</div><div class="part-body">${esc(p.rawText || "")}</div></div>`;
+}
+
+// 遅延ハイライト: details を開いた時に対象の .lazy-hl だけ highlight.js へ通す。
+// 初期表示はエスケープ済みプレーンテキストを置いておく（表示崩れは色だけの差）。
+// 検索語の <mark> はハイライト後に通常と同じ手順で付与する
+function hydrateLazyHighlights(root: ParentNode): void {
+  const blocks = root.querySelectorAll<HTMLElement>(".lazy-hl");
+  if (!blocks.length) return;
+  const terms = searchTerms();
+  for (const el of blocks) {
+    const lang = el.dataset.lang || "plaintext";
+    el.innerHTML = markTermsHtml(
+      highlightTokens(el.textContent || "", lang),
+      terms,
+    );
+    el.classList.remove("lazy-hl");
+    delete el.dataset.lang;
+  }
 }
 
 $("prevPage").addEventListener("click", () => {
@@ -644,6 +656,7 @@ $("reloadBtn").addEventListener("click", async () => {
   const btn = $button("reloadBtn");
   btn.disabled = true;
   try {
+    statsCache = null;
     await loadProjects();
     // loadProjects が option を作り直すため、選択中のプロジェクトを復元する
     const sel = $select("projectFilter");
@@ -810,10 +823,16 @@ $("timelineClear").addEventListener("click", async () => {
 // ---------- やり取りナビ（User発言 ⇄ AI最終回答の往復移動） ----------
 let navAnchors: HTMLElement[] = [];
 let navPos = 0;
+// アンカー位置（コンテナ内容座標）のキャッシュ。スクロール毎に全アンカーの
+// getBoundingClientRect を呼ぶと巨大セッションでフレーム落ちするため、
+// レイアウトが変わる操作（details 開閉・リサイズ・フォント確定）で無効化し、
+// 次回スクロール時に一度だけ測り直す
+let navOffsets: number[] | null = null;
 
 function buildNav(): void {
   navAnchors = [];
   navPos = 0;
+  navOffsets = null;
   const msgs = [...$("sessionDetail").querySelectorAll(".msg")];
   const isUser = (m: Element): boolean =>
     m.querySelector(".role")?.classList.contains("user") ?? false;
@@ -826,6 +845,17 @@ function buildNav(): void {
     i = j;
   }
   updateNav();
+}
+
+// 内容座標 = el の上端 - (コンテナ上端 - scrollTop)。スクロールしても不変
+function ensureNavOffsets(container: HTMLElement): number[] {
+  if (!navOffsets) {
+    const origin = container.getBoundingClientRect().top - container.scrollTop;
+    navOffsets = navAnchors.map(
+      (el) => el.getBoundingClientRect().top - origin,
+    );
+  }
+  return navOffsets;
 }
 
 function updateNav(): void {
@@ -861,11 +891,8 @@ let navSyncQueued = false;
 function syncNavFromScroll(): void {
   if (navAnchors.length === 0) return;
   const container = $("sessionDetail");
-  const containerTop = container.getBoundingClientRect().top;
-  const tops = navAnchors.map(
-    (el) => el.getBoundingClientRect().top - containerTop,
-  );
-  const idx = resolveNavIndex(tops, NAV_SYNC_OFFSET);
+  const offsets = ensureNavOffsets(container);
+  const idx = resolveNavIndex(offsets, container.scrollTop + NAV_SYNC_OFFSET);
   if (idx !== navPos) {
     navPos = idx;
     updateNav();
@@ -882,36 +909,65 @@ function requestNavSync(): void {
 $("sessionDetail").addEventListener("scroll", requestNavSync, {
   passive: true,
 });
-// <details> の開閉でアンカー位置がずれるため、レイアウト確定後に再同期する
-$("sessionDetail").addEventListener("toggle", requestNavSync, true);
-window.addEventListener("resize", requestNavSync);
+// <details> の開閉でアンカー位置がずれるため、レイアウト確定後に再同期する。
+// 併せて開いた詳細の中の遅延ハイライトを実行する
+$("sessionDetail").addEventListener(
+  "toggle",
+  (e) => {
+    if (e.target instanceof HTMLDetailsElement && e.target.open) {
+      hydrateLazyHighlights(e.target);
+    }
+    navOffsets = null;
+    requestNavSync();
+  },
+  true,
+);
+window.addEventListener("resize", () => {
+  navOffsets = null;
+  requestNavSync();
+});
 
 // ---------- 統計 ----------
+// 非同期の競合対策: タブ連打で古いレスポンスが新しい表示を上書きしないよう世代管理する
+let statsSeq = 0;
+interface StatsData {
+  sessionCount: number;
+  messageCount: number;
+  partCount: number;
+  tokens: { cost: number; ti: number; tout: number };
+  perProject: PerProjectRow[];
+  perModel: PerModelRow[];
+  toolUsage: ToolUsageRow[];
+}
+// 集計は巨大 DB だと数百 ms かかるため、同一ページ表示中は再取得しない。
+// Sessions タブの Reload ボタンで破棄する（次回の Stats 表示で取り直す）
+let statsCache: StatsData | null = null;
+
 async function loadStats(): Promise<void> {
-  let s: {
-    sessionCount: number;
-    messageCount: number;
-    partCount: number;
-    tokens: { cost: number; ti: number; tout: number };
-    perProject: PerProjectRow[];
-    perModel: PerModelRow[];
-    toolUsage: ToolUsageRow[];
-  };
+  const my = ++statsSeq;
+  if (statsCache) {
+    renderStats(statsCache);
+    return;
+  }
+  // 初回は待たされるため、不確定進捗バーを即座に出してから取得する
+  $("statsCards").innerHTML = `
+    <div class="loadbar" role="progressbar" aria-label="Loading stats"><div></div></div>
+    <p class="muted">Loading stats…</p>`;
+  let s: StatsData;
   try {
-    s = await api<{
-      sessionCount: number;
-      messageCount: number;
-      partCount: number;
-      tokens: { cost: number; ti: number; tout: number };
-      perProject: PerProjectRow[];
-      perModel: PerModelRow[];
-      toolUsage: ToolUsageRow[];
-    }>(`/api/stats`);
+    s = await api<StatsData>(`/api/stats`);
   } catch (e) {
+    if (my !== statsSeq) return;
     $("statsCards").innerHTML =
       `<p>Failed to load stats: ${esc(e instanceof Error ? e.message : String(e))}</p>`;
     return;
   }
+  if (my !== statsSeq) return;
+  statsCache = s;
+  renderStats(s);
+}
+
+function renderStats(s: StatsData): void {
   $("statsCards").innerHTML = `
     <div class="card" title="${fmtExact(s.sessionCount)}"><div class="muted">Sessions</div><div class="num">${fmtCount(s.sessionCount)}</div></div>
     <div class="card" title="${fmtExact(s.messageCount)}"><div class="muted">Messages</div><div class="num">${fmtCount(s.messageCount)}</div></div>
@@ -958,5 +1014,9 @@ try {
 moveTabIndicator();
 window.addEventListener("resize", moveTabIndicator);
 if (document.fonts?.ready) {
-  document.fonts.ready.then(moveTabIndicator);
+  document.fonts.ready.then(() => {
+    navOffsets = null;
+    requestNavSync();
+    moveTabIndicator();
+  });
 }

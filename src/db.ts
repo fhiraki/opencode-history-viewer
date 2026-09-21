@@ -91,7 +91,7 @@ export function listProjects(db: DatabaseSync): Row[] {
         COUNT(s.id) AS sessionCount,
         MAX(s.time_updated) AS lastActive
        FROM project p LEFT JOIN session s ON s.project_id = p.id
-       GROUP BY p.id ORDER BY lastActive DESC`,
+       GROUP BY p.id ORDER BY lastActive DESC, p.id DESC`,
     )
     .all();
   return rows;
@@ -161,6 +161,9 @@ export function listSessions(
   // N+1（50件で約800ms）のラウンドトリップを避けるためのバッチ化。
   // substr(p.data,1,N) を JSON.parse すると切断位置で壊れるため、
   // json_extract で text/role だけ抜き出してから substr する。
+  // また text パートは {"type":"text" で始まるため prefix 判定を先に置き、
+  // 巨大な tool 出力まで json_extract でパースするのを避ける（実測 2.3 倍）。
+  // prefix が崩れた非正規形はプレビューが空になるだけで一覧表示は壊さない
   if (sessions.length) {
     const ids = sessions.map((s) => String(s.id));
     const placeholders = ids.map(() => "?").join(",");
@@ -180,6 +183,7 @@ export function listSessions(
                ) AS rn
              FROM part p ${join}
              WHERE p.session_id IN (${placeholders})
+               AND substr(p.data,1,14) = '{"type":"text"'
                AND json_extract(p.data, '$.type') = 'text'
                AND typeof(json_extract(p.data, '$.text')) = 'text'
                AND json_extract(p.data, '$.text') <> ''
@@ -382,20 +386,23 @@ export function searchParts(
   const projCond = project ? `AND s.project_id = ?` : "";
   if (project) params.push(project);
 
-  // 総件数（LIKE の全走査が支配的なため COUNT 専用の最適化はしない）
+  // 総件数は通常この取得クエリ側で同時に取る。ここは offset 超過で 0 件のときのみ使う
   const countSql = `SELECT COUNT(*) AS c FROM part p JOIN session s ON s.id = p.session_id
     WHERE ${termConds} ${projCond}`;
-  const total = (db.prepare(countSql).get(...params)?.c as number) ?? 0;
 
   // 先に該当 part の id だけを並べ替えて 50 件に絞り、JSON 抜き出しはその 50 件にだけ行う
-  // （全ヒット行に対して json_extract/substr すると巨大 JSON で数秒かかる）
-  const sql = `WITH picked AS (
-    SELECT p.id AS pid, p.time_created AS ptc
+  // （全ヒット行に対して json_extract/substr すると巨大 JSON で数秒かかる）。
+  // 総件数は COUNT(*) OVER () で同一スキャンから取る（従来は COUNT 用に同じ全走査を
+  // もう一度実行しており、検索 1 回で 2 回スキャンしていた）。
+  // COUNT(*) OVER () は LIMIT 適用前に全ヒット行へ計算される
+  const sql = `WITH picked AS MATERIALIZED (
+    SELECT p.id AS pid, p.time_created AS ptc, COUNT(*) OVER () AS total
     FROM part p JOIN session s ON s.id = p.session_id
     WHERE ${termConds} ${projCond}
     ORDER BY p.time_created DESC, p.id DESC LIMIT ? OFFSET ?
   )
   SELECT p.session_id, p.message_id, p.id AS part_id, p.time_created,
+      picked.total AS total,
       json_extract(p.data, '$.type') AS ptype,
       json_extract(p.data, '$.tool') AS ptool,
       COALESCE(json_extract(p.data, '$.title'), json_extract(p.data, '$.state.title')) AS ptitle,
@@ -412,6 +419,12 @@ export function searchParts(
     LEFT JOIN message m ON m.id = p.message_id
     ORDER BY picked.ptc DESC, picked.pid DESC`;
   const rows = db.prepare(sql).all(...params, Number(limit), Number(offset));
+
+  let total = rows.length ? Number(rows[0]?.total ?? 0) : 0;
+  // ヒットが 0 件でも offset が 1 ページ目でなければ総件数が 0 とは限らない
+  if (rows.length === 0 && offset > 0) {
+    total = (db.prepare(countSql).get(...params)?.c as number) ?? 0;
+  }
 
   const lowerTerms = terms.map((t) => t.toLowerCase());
   const hits = rows.map((r) => {
@@ -512,7 +525,7 @@ export function getTimeline(
          SELECT date(time_created / 1000, 'unixepoch', 'localtime') AS day, title,
            ROW_NUMBER() OVER (
              PARTITION BY date(time_created / 1000, 'unixepoch', 'localtime')
-             ORDER BY time_created DESC
+             ORDER BY time_created DESC, id DESC
            ) AS rn
          FROM session ${tCond}
        ) WHERE rn <= 5 ORDER BY day, rn`,
@@ -592,30 +605,83 @@ export function getStats(db: DatabaseSync): {
         COUNT(*) AS sessions, COALESCE(SUM(s.cost),0) AS cost,
         MAX(s.time_updated) AS lastActive
        FROM session s LEFT JOIN project p ON p.id = s.project_id
-       GROUP BY s.project_id ORDER BY sessions DESC`,
+       GROUP BY s.project_id ORDER BY sessions DESC, s.project_id DESC`,
     )
     .all();
-  const toolUsage = db
+  // toolUsage は json_extract(data,'$.type') を全 part に適用すると、巨大な tool 出力まで
+  // JSON パースして数秒かかる（実測 11GB DB で約 3 秒）。part.data は
+  // {"type":"tool","tool":"...",...} の並びで始まるため、先頭 160 バイトだけを読み
+  // （prefix の substr は行全体を実体化しない）、文字列処理で tool 名を切り出す。
+  // 正規形でない行（旧形式でキー順が違う等）だけ json_extract にフォールバックする
+  const TOOL_HEAD_PREFIX = '{"type":"tool","tool":"';
+  const toolHeads = db
     .prepare(
-      `SELECT json_extract(data,'$.tool') AS tool, COUNT(*) AS c FROM part
-       WHERE json_extract(data,'$.type')='tool' GROUP BY 1 ORDER BY c DESC LIMIT 20`,
+      `SELECT id, substr(data,1,160) AS h FROM part
+       WHERE substr(data,1,14)='{"type":"tool"'`,
     )
     .all();
+  const toolCounts = new Map<string, number>();
+  const fallbackIds: string[] = [];
+  const addTool = (tool: unknown, c: unknown) => {
+    const name = typeof tool === "string" && tool !== "" ? tool : "(unknown)";
+    toolCounts.set(name, (toolCounts.get(name) ?? 0) + Number(c ?? 0));
+  };
+  for (const r of toolHeads) {
+    const head = String(r.h ?? "");
+    if (!head.startsWith(TOOL_HEAD_PREFIX)) {
+      fallbackIds.push(String(r.id));
+      continue;
+    }
+    const start = TOOL_HEAD_PREFIX.length;
+    const end = head.indexOf('"', start);
+    // 先頭 160 バイト内に閉じ引用符が無いのは異常データ。フォールバックで正確に取る
+    if (end <= start) {
+      fallbackIds.push(String(r.id));
+      continue;
+    }
+    addTool(head.slice(start, end), 1);
+  }
+  if (fallbackIds.length > 0) {
+    // SQLite のバインド変数上限に当たらないよう分割して問い合わせる
+    const CHUNK = 500;
+    for (let i = 0; i < fallbackIds.length; i += CHUNK) {
+      const chunk = fallbackIds.slice(i, i + CHUNK);
+      const holes = chunk.map(() => "?").join(",");
+      const rows = db
+        .prepare(
+          `SELECT json_extract(data,'$.tool') AS tool, COUNT(*) AS c FROM part
+           WHERE id IN (${holes}) GROUP BY 1`,
+        )
+        .all(...chunk);
+      for (const r of rows) addTool(r.tool, r.c);
+    }
+  }
+  const toolUsage = [...toolCounts.entries()]
+    .map(([tool, c]) => ({ tool, c }))
+    .sort((a, b) => b.c - a.c || a.tool.localeCompare(b.tool))
+    .slice(0, 20);
   // モデル別集計は message 単位で行う。session.model は最終選択モデルのため、
-  // マルチモデルセッション（62件中4件）のコスト按分に使うと誤集計になる
+  // マルチモデルセッション（62件中4件）のコスト按分に使うと誤集計になる。
+  // message.data は role が先頭付近（実測 最長 46 バイト目）にあるため、先頭 512 バイトの
+  // LIKE で assistant を絞ってから json_extract する。全行（user の巨大データを含む
+  // 569MB）へ json_extract する従来形は 0.5〜0.8 秒かかっていた
   const perModel = db
     .prepare(
-      `SELECT json_extract(m.data,'$.providerID') AS provider,
-        json_extract(m.data,'$.modelID') AS id,
-        COUNT(*) AS messages,
-        COUNT(DISTINCT m.session_id) AS sessions,
-        COALESCE(SUM(json_extract(m.data,'$.cost')),0) AS cost,
-        COALESCE(SUM(json_extract(m.data,'$.tokens.input')),0) AS ti,
-        COALESCE(SUM(json_extract(m.data,'$.tokens.output')),0) AS tout,
-        COALESCE(SUM(json_extract(m.data,'$.tokens.reasoning')),0) AS tr,
-        COALESCE(SUM(json_extract(m.data,'$.time.completed') - json_extract(m.data,'$.time.created')),0) AS activeMs
-       FROM message m WHERE json_extract(m.data,'$.role')='assistant'
-       GROUP BY 1, 2 ORDER BY messages DESC`,
+      `WITH assistant_msgs AS MATERIALIZED (
+         SELECT session_id, data FROM message
+         WHERE substr(data,1,512) LIKE '%"role":"assistant"%'
+           AND json_extract(data,'$.role')='assistant'
+       )
+       SELECT json_extract(data,'$.providerID') AS provider,
+         json_extract(data,'$.modelID') AS id,
+         COUNT(*) AS messages,
+         COUNT(DISTINCT session_id) AS sessions,
+         COALESCE(SUM(json_extract(data,'$.cost')),0) AS cost,
+         COALESCE(SUM(json_extract(data,'$.tokens.input')),0) AS ti,
+         COALESCE(SUM(json_extract(data,'$.tokens.output')),0) AS tout,
+         COALESCE(SUM(json_extract(data,'$.tokens.reasoning')),0) AS tr,
+         COALESCE(SUM(json_extract(data,'$.time.completed') - json_extract(data,'$.time.created')),0) AS activeMs
+       FROM assistant_msgs GROUP BY 1, 2 ORDER BY messages DESC, provider, id`,
     )
     .all();
   const range = db
