@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node dist/server.js",
     "prestart": "npm run build",
-    "dev": "node scripts/build.mjs --watch & node --watch dist/server.js",
+    "dev": "node scripts/dev.mjs",
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.ts",

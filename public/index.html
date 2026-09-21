@@ -20,17 +20,17 @@
     </span>
     <span>OpenCode History Viewer</span>
   </div>
-  <nav class="tabs">
+  <div class="tabs" role="tablist">
     <span class="tabs-indicator" aria-hidden="true"></span>
-    <button type="button" data-tab="sessions" class="active">Sessions</button>
-    <button type="button" data-tab="search">Search</button>
-    <button type="button" data-tab="timeline">Timeline</button>
-    <button type="button" data-tab="stats">Stats</button>
-  </nav>
+    <button type="button" data-tab="sessions" id="tabBtn-sessions" role="tab" aria-selected="true" aria-controls="tab-sessions" class="active">Sessions</button>
+    <button type="button" data-tab="search" id="tabBtn-search" role="tab" aria-selected="false" aria-controls="tab-search">Search</button>
+    <button type="button" data-tab="timeline" id="tabBtn-timeline" role="tab" aria-selected="false" aria-controls="tab-timeline">Timeline</button>
+    <button type="button" data-tab="stats" id="tabBtn-stats" role="tab" aria-selected="false" aria-controls="tab-stats">Stats</button>
+  </div>
 </header>
 
 <main>
-  <section id="tab-sessions" class="tab active">
+  <section id="tab-sessions" class="tab active" role="tabpanel" aria-labelledby="tabBtn-sessions">
     <div class="filters">
       <select id="projectFilter"><option value="">All projects</option></select>
       <select id="sortSelect">
@@ -61,7 +61,7 @@
     </div>
   </section>
 
-  <section id="tab-search" class="tab">
+  <section id="tab-search" class="tab" role="tabpanel" aria-labelledby="tabBtn-search">
     <div class="filters">
       <input id="searchInput" type="search" placeholder="Search message bodies and tool output (space-separated AND)" />
       <button type="button" id="searchBtn">Search</button>
@@ -75,7 +75,7 @@
     </div>
   </section>
 
-  <section id="tab-timeline" class="tab">
+  <section id="tab-timeline" class="tab" role="tabpanel" aria-labelledby="tabBtn-timeline">
     <div class="filters">
       <span class="muted">Daily activity: when and how much you worked. Click a row to filter sessions for that day.</span>
       <button type="button" id="timelineClear">Clear filter</button>
@@ -83,7 +83,7 @@
     <div id="timeline" class="timeline"></div>
   </section>
 
-  <section id="tab-stats" class="tab">
+  <section id="tab-stats" class="tab" role="tabpanel" aria-labelledby="tabBtn-stats">
     <div id="statsCards" class="cards"></div>
     <h3>By project</h3>
     <div id="statsProjects"></div>

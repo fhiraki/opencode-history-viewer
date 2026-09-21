@@ -64,7 +64,7 @@ If the DB file is missing, the server exits with an error and tells you to set `
 
 | Method | Endpoint                                                      | Description                              |
 | ------ | ------------------------------------------------------------- | ---------------------------------------- |
-| `GET`  | `/api/health`                                                 | Liveness check (`{ ok, db }`)            |
+| `GET`  | `/api/health`                                                 | Liveness check (`{ ok }`)                |
 | `GET`  | `/api/projects`                                               | Project list                             |
 | `GET`  | `/api/sessions?limit=&offset=&q=&project=&from=&to=&sort=`    | Session list (`sort=updated` \| `created`) |
 | `GET`  | `/api/session/:id`                                            | Session detail (messages + parts)        |
@@ -92,7 +92,8 @@ npm run format     # auto-fix with Biome
 
 Layout:
 
-- `src/server.ts` — HTTP API (plain `node:http`, no Express), bundled to `dist/` with esbuild
+- `src/server.ts` — process entry point (DB open, loopback listen, shutdown), bundled to `dist/` with esbuild
+- `src/handler.ts` — HTTP routing/handler (`createHandler`, tested over real HTTP)
 - `src/db.ts` — all SQLite access
 - `src/client/` — UI (`app.ts` + `highlight.ts`), bundled to `public/dist/`
 - `src/shared/` — DOM-free pure functions (formatting, navigation, validation), imported directly from `test/`
@@ -103,7 +104,7 @@ Dependencies are all permissive licenses only: TypeScript (Apache-2.0), esbuild 
 
 ### License
 
-MIT (see `package.json`; runtime has no third-party dependencies — all libraries are build/dev-only and bundled).
+MIT (see `LICENSE`; runtime has no third-party dependencies — all libraries are build/dev-only and bundled).
 
 ---
 
@@ -169,7 +170,7 @@ DB ファイルが存在しない場合、サーバーはエラーを表示し�
 
 | メソッド | エンドポイント                                                | 説明                              |
 | -------- | ------------------------------------------------------------- | --------------------------------- |
-| `GET`    | `/api/health`                                                 | 生存確認（`{ ok, db }` を返す）   |
+| `GET`    | `/api/health`                                                 | 生存確認（`{ ok }` を返す）       |
 | `GET`    | `/api/projects`                                               | プロジェクト一覧                  |
 | `GET`    | `/api/sessions?limit=&offset=&q=&project=&from=&to=&sort=`    | セッション一覧（`sort=updated` \| `created`） |
 | `GET`    | `/api/session/:id`                                            | セッション詳細（messages + parts）|
@@ -197,7 +198,8 @@ npm run format     # Biome による自動修正
 
 構成:
 
-- `src/server.ts` … API（標準 `node:http` のみ、Express 不使用）。esbuild で `dist/` にバンドルして実行
+- `src/server.ts` … プロセス起動（DB オープン・loopback 待受・終了処理）。esbuild で `dist/` にバンドルして実行
+- `src/handler.ts` … HTTP ルーティング／ハンドラ（`createHandler`。実 HTTP でテストされる）
 - `src/db.ts` … SQLite アクセス層（全クエリはここ）
 - `src/client/` … UI（`app.ts` + `highlight.ts`）。esbuild で `public/dist/` にバンドル
 - `src/shared/` … DOM 非依存の純粋関数（整形・ナビゲーション・バリデーション）。`test/` から直接 import
@@ -208,4 +210,4 @@ npm run format     # Biome による自動修正
 
 ### ライセンス
 
-MIT（`package.json` 参照。ランタイムに第三者依存はなく、すべてのライブラリはビルド・開発用途のみでバンドルされます）。
+MIT（`LICENSE` 参照。ランタイムに第三者依存はなく、すべてのライブラリはビルド・開発用途のみでバンドルされます）。

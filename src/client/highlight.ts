@@ -182,6 +182,20 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+// プレーンテキスト（エスケープ前）の検索語を <mark> 化する。
+// 語ごとに逐次 replace すると、挿入した <mark> タグ自身に後続語（"mark" 等）が
+// マッチして壊れるため、全語を1本の正規表現にまとめて1パスで置換する。
+export function markPlainTextHtml(text: string, terms: string[]): string {
+  const clean = normalizeTerms(terms);
+  const out = esc(text);
+  if (!clean.length) return out;
+  const pattern = new RegExp(
+    `(${clean.map((t) => escapeRegExp(esc(t))).join("|")})`,
+    "gi",
+  );
+  return out.replace(pattern, "<mark>$1</mark>");
+}
+
 // 検索語の正規化（空白分割・空除去・重複除去・長大語切り詰め・最大8語）。
 // スニペット強調・本文マーク・API クエリで共通利用する。
 export function normalizeTerms(input: string | string[]): string[] {
@@ -268,6 +282,10 @@ export function renderProse(text: string, terms: string[]): string {
   } catch {
     html = esc(text);
   }
+  // 横に長い表がレイアウトを壊さないよう、marked が生成した table を薄くラップする
+  html = html
+    .replaceAll("<table>", '<div class="md-table-wrap"><table>')
+    .replaceAll("</table>", "</table></div>");
   return markTermsHtml(html, terms);
 }
 

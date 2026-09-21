@@ -1,62 +1,21 @@
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { describe, it } from "node:test";
-import { listSessions, searchParts } from "../src/db.ts";
+import {
+  escapeLike,
+  getSessionDetail,
+  getStats,
+  getTimeline,
+  listSessions,
+  searchParts,
+} from "../src/db.ts";
+import { fixture } from "./fixture.ts";
 
-// 実 DB には触らない。:memory: に最小スキーマを作り、プレビュー選択と
-// スニペット生成の振る舞いだけを検証する。
-function fixture(): DatabaseSync {
-  const db = new DatabaseSync(":memory:");
-  db.exec(`CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT, name TEXT);
-    CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, directory TEXT,
-      title TEXT, time_created INTEGER, time_updated INTEGER, cost REAL,
-      tokens_input INTEGER, tokens_output INTEGER, tokens_reasoning INTEGER,
-      tokens_cache_read INTEGER, tokens_cache_write INTEGER, agent TEXT, model TEXT);
-    CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT,
-      time_created INTEGER, time_updated INTEGER, data TEXT);
-    CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
-      time_created INTEGER, time_updated INTEGER, data TEXT);`);
-  const sess = db.prepare(
-    `INSERT INTO session (id, project_id, directory, title, time_created, time_updated)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  );
-  sess.run("s1", "p1", "/tmp/x", "first", 1000, 3000);
-  sess.run("s2", "p1", "/tmp/x", "second", 1000, 2000);
-  sess.run("s3", "p1", "/tmp/x", "third", 1000, 1000);
-  const msg = db.prepare(
-    `INSERT INTO message (id, session_id, time_created, time_updated, data)
-     VALUES (?, ?, ?, ?, ?)`,
-  );
-  msg.run("m1", "s1", 1, 1, '{"role":"user"}');
-  msg.run("m2", "s1", 2, 2, '{"role":"assistant"}');
-  msg.run("m3", "s2", 1, 1, '{"role":"assistant"}');
-  msg.run("m4", "s3", 1, 1, '{"role":"user"}');
-  const part = db.prepare(
-    `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  );
-  // 空 text はスキップされること（先頭に置く）
-  part.run("p0", "m1", "s1", 1, 1, '{"type":"text","text":""}');
-  part.run(
-    "p1",
-    "m1",
-    "s1",
-    2,
-    2,
-    '{"type":"text","text":"user question alpha"}',
-  );
-  part.run("p2", "m2", "s1", 3, 3, '{"type":"text","text":"assistant answer"}');
-  part.run("p3", "m3", "s2", 1, 1, '{"type":"text","text":"only answer"}');
-  part.run(
-    "p4",
-    "m4",
-    "s3",
-    1,
-    1,
-    '{"type":"tool","tool":"read","state":{"input":{"filePath":"/a.ts"},"output":"x"}}',
-  );
-  return db;
-}
+describe("escapeLike", () => {
+  it("escapes %, _ and backslash for LIKE ... ESCAPE", () => {
+    assert.equal(escapeLike("a%b_c\\d"), "a\\%b\\_c\\\\d");
+    assert.equal(escapeLike("plain"), "plain");
+  });
+});
 
 describe("listSessions preview", () => {
   it("prefers the first user text, skipping empty parts", () => {
@@ -66,7 +25,56 @@ describe("listSessions preview", () => {
       const byId = new Map(sessions.map((s) => [String(s.id), s]));
       assert.equal(byId.get("s1")?.preview, "user question alpha");
       assert.equal(byId.get("s2")?.preview, "only answer");
-      assert.equal(byId.get("s3")?.preview, "");
+      assert.equal(byId.get("s3")?.preview, "progress 100% done");
+    } finally {
+      db.close();
+    }
+  });
+  it("orders by id as a tiebreaker for equal timestamps", () => {
+    const db = fixture();
+    try {
+      // s1/s2/s3 は time_created が同値なので id 降順で決定的に並ぶ
+      const { sessions } = listSessions(db, { limit: 3, sort: "created" });
+      assert.deepEqual(
+        sessions.map((s) => String(s.id)),
+        ["s3", "s2", "s1"],
+      );
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("getSessionDetail caps", () => {
+  type DetailPart = {
+    id: string;
+    text?: string;
+    truncated?: boolean;
+    fullLength?: number;
+    input?: string;
+    inputTruncated?: boolean;
+    output?: string;
+    outputTruncated?: boolean;
+    outputFullLength?: number;
+  };
+  it("truncates long text and tool payloads with metadata", () => {
+    const db = fixture();
+    try {
+      const detail = getSessionDetail(db, "s1") as unknown as {
+        messages: { parts: DetailPart[] }[];
+      } | null;
+      assert.ok(detail);
+      const parts = detail.messages.flatMap((m) => m.parts);
+      const longText = parts.find((p) => p.id === "p5");
+      assert.equal(longText?.truncated, true);
+      assert.equal(longText?.text?.length, 8000);
+      assert.equal(longText?.fullLength, 9000);
+      const longTool = parts.find((p) => p.id === "p6");
+      assert.equal(longTool?.inputTruncated, true);
+      assert.equal(longTool?.input?.length, 4000);
+      assert.equal(longTool?.outputTruncated, true);
+      assert.equal(longTool?.output?.length, 8000);
+      assert.equal(longTool?.outputFullLength, 9000);
     } finally {
       db.close();
     }
@@ -83,9 +91,7 @@ describe("searchParts snippet", () => {
         hits.some(
           (h) =>
             typeof h.snippet === "string" &&
-            (h.snippet as string).includes("alpha") &&
-            typeof h.matchPos === "number" &&
-            (h.matchPos as number) >= 0,
+            (h.snippet as string).includes("alpha"),
         ),
       );
     } finally {
@@ -96,6 +102,73 @@ describe("searchParts snippet", () => {
     const db = fixture();
     try {
       assert.deepEqual(searchParts(db, { q: "   " }), { total: 0, hits: [] });
+    } finally {
+      db.close();
+    }
+  });
+  it("ignores JSON key names that are not displayed", () => {
+    const db = fixture();
+    try {
+      // "type" は全 part の JSON キーだが表示内容には現れない
+      assert.equal(searchParts(db, { q: "type" }).total, 0);
+      // tool 入力は表示対象なのでキー名も検索できる
+      assert.equal(searchParts(db, { q: "filePath" }).total, 1);
+    } finally {
+      db.close();
+    }
+  });
+  it("treats % and _ literally via escapeLike", () => {
+    const db = fixture();
+    try {
+      assert.equal(searchParts(db, { q: "100%" }).total, 1);
+      assert.equal(searchParts(db, { q: "100_1" }).total, 0);
+    } finally {
+      db.close();
+    }
+  });
+  it("matches terms with quotes and backslashes via the JSON-escaped prefilter", () => {
+    const db = fixture();
+    try {
+      assert.equal(searchParts(db, { q: 'say "hi"' }).total, 1);
+      assert.equal(searchParts(db, { q: "C:\\path" }).total, 1);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("getTimeline", () => {
+  it("aggregates sessions, messages and titles by local day", () => {
+    const db = fixture();
+    try {
+      const days = getTimeline(db);
+      assert.equal(days.length, 1);
+      const day = days[0];
+      assert.equal(day?.sessions, 3);
+      assert.equal(day?.messages, 4);
+      assert.deepEqual(day?.titles.slice().sort(), [
+        "first",
+        "second",
+        "third",
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("getStats", () => {
+  it("reports totals, per-project sessions and tool usage", () => {
+    const db = fixture();
+    try {
+      const stats = getStats(db);
+      assert.equal(stats.sessionCount, 3);
+      assert.equal(stats.messageCount, 4);
+      assert.equal(stats.partCount, 9);
+      assert.equal(stats.perProject[0]?.sessions, 3);
+      const tools = new Map(stats.toolUsage.map((t) => [String(t.tool), t.c]));
+      assert.equal(tools.get("read"), 1);
+      assert.equal(tools.get("bash"), 1);
     } finally {
       db.close();
     }

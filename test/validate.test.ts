@@ -34,6 +34,11 @@ describe("clampInt", () => {
     assert.equal(clampInt("9999", 50, 200), 200);
     assert.equal(clampInt("Infinity", 50, 200), 50);
   });
+  it("honors an explicit minimum", () => {
+    assert.equal(clampInt("0", 50, 200, 1), 1);
+    assert.equal(clampInt("-5", 50, 200, 1), 1);
+    assert.equal(clampInt("10", 50, 200, 1), 10);
+  });
 });
 
 describe("clampMs", () => {
@@ -100,5 +105,10 @@ describe("parseQuery", () => {
   });
   it("defaults missing urls to /", () => {
     assert.equal(parseQuery(undefined).pathname, "/");
+  });
+  it("falls back to / for malformed absolute URLs", () => {
+    // new URL("http://[") は throw する。以前はリクエストハンドラごと落ちていた
+    assert.equal(parseQuery("http://[").pathname, "/");
+    assert.equal(parseQuery("http://[").params.get("x"), null);
   });
 });

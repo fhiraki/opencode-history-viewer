@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   highlightTokens,
+  markPlainTextHtml,
   markTermsHtml,
   normalizeLang,
   normalizeTerms,
@@ -50,6 +51,28 @@ describe("markTermsHtml", () => {
   });
   it("returns input unchanged without terms", () => {
     assert.equal(markTermsHtml("<b>x</b>", []), "<b>x</b>");
+  });
+});
+
+describe("markPlainTextHtml", () => {
+  it("marks terms in escaped plain text", () => {
+    assert.equal(
+      markPlainTextHtml("a mark here", ["a", "mark"]),
+      "<mark>a</mark> <mark>mark</mark> here",
+    );
+    assert.equal(
+      markPlainTextHtml("<b>x</b>", ["x"]),
+      "&lt;b&gt;<mark>x</mark>&lt;/b&gt;",
+    );
+  });
+  it("does not rescan its own <mark> tags", () => {
+    // 逐次 replace 実装だと term "mark" が挿入済みタグに再マッチして壊れる
+    const out = markPlainTextHtml("a mark here", ["a", "mark"]);
+    assert.equal(out.includes("<<"), false);
+    assert.equal((out.match(/<mark>/g) ?? []).length, 2);
+  });
+  it("returns escaped text unchanged without terms", () => {
+    assert.equal(markPlainTextHtml("<b>x</b>", []), "&lt;b&gt;x&lt;/b&gt;");
   });
 });
 
@@ -119,6 +142,11 @@ describe("renderProse markdown", () => {
     assert.match(table, /<table>/);
     assert.match(table, /<th>a<\/th>/);
     assert.match(table, /align="right"/);
+  });
+  it("wraps tables for horizontal scrolling", () => {
+    const table = renderProse("| a | b |\n| --- | --- |\n| 1 | 2 |", []);
+    assert.match(table, /<div class="md-table-wrap"><table>/);
+    assert.match(table, /<\/table><\/div>/);
   });
   it("escapes raw HTML to prevent XSS", () => {
     const out = renderProse("<script>alert(1)</script>", []);

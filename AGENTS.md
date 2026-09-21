@@ -1,11 +1,13 @@
 # AGENTS.md
 
 ## 構成
-- `src/server.ts` … API（標準 `node:http` のみ、Express 不使用）。esbuild で `dist/` にバンドルして実行
+- `src/server.ts` … プロセス起動（DB オープン・loopback 待受・終了処理）。esbuild で `dist/` にバンドルして実行
+- `src/handler.ts` … HTTP ルーティング／ハンドラ（`createHandler`。テストから実 HTTP サーバーに載せて検証する）
 - `src/db.ts` … SQLite アクセス層（全クエリはここ）
 - `src/client/` … UI（`app.ts` + `highlight.ts`）。esbuild で `public/dist/` にバンドル
-- `src/shared/` … DOM 非依存の純粋関数（`format.ts` 整形系＋`nav.ts` ナビ判定）。`test/` から直接 import される
+- `src/shared/` … DOM 非依存の純粋関数（`format.ts` 整形系＋`nav.ts` ナビ判定＋`validate.ts` 入力正規化）。`test/` から直接 import される
 - `public/` … `index.html` + `style.css`（手書き）
+- `scripts/` … `build.mjs`（本番ビルド）／`dev.mjs`（watch＋サーバー管理）／`esbuild.config.mjs`（共有設定）
 - `public/dist/` と `dist/` はビルド成果物で編集禁止。修正は必ず `src/` 側に行う
 
 ## コマンド
@@ -17,7 +19,7 @@
 ## DB ルール（厳守）
 - 実 DB は必ず `new DatabaseSync(path, { readOnly: true })` で開く。書き込み・マイグレーション・VACUUM 禁止
 - 既定パス: `~/.local/share/opencode/opencode.db`
-- `event` テーブルは絶対に触らない（DB 約7GB のうち約5.6GB を占める）。`session` / `message` / `part` のみ使う
+- `event` テーブルは絶対に触らない（DB の大部分を占める。執筆時点で DB 約11GB）。`session` / `message` / `part` のみ使う
 - タイムスタンプは ms epoch。タイムラインの日別集計はサーバーローカル日付でバケット化（SQL 側で `date(...,'localtime')` 集計し、全行を JS に載せない）
 
 ## SQLite の落とし穴
@@ -27,7 +29,8 @@
 - 一覧の per-session 取得に全体 `ORDER BY`＋`LIMIT` を使わない（先頭セッションに枠を奪われる＋低速）。`session_id` 索引の効く window 関数で2発（user 先頭＋全体先頭）にバッチ化する。N+1 分割は 50件で約800ms のため避ける
 - `session.model` も JSON 文字列（`{"id","providerID","variant"}`。旧形式はプレーン文字列）。表示は `parseModel` 経由にし、生 JSON を出さない
 - モデル別のコスト集計は message 単位で行う（`session.model` は最終選択モデルのため、マルチモデルセッションの按分に使うと誤集計になる）
-- LIKE 検索は `escapeLike`（`%_\\`）＋ `ESCAPE '\\'` 必須
+- LIKE 検索は `escapeLike`（`%_\\`）＋ `ESCAPE '\\'` 必須。生 JSON への LIKE は `type` 等のキー名に当たるため、prefilter の後に表示対象フィールド（`$.text` / tool の `$.title`・`$.state` / `$.files`）だけを照合する（prefilter は JSON エスケープ済み表記に合わせる）
+- 一覧・検索の `ORDER BY` には同値対策で `id DESC` を第2キーに付ける（`time_updated`・`time_created` は重複し得る）
 - 巨大出力を返さない caps を維持する: 本文 8000・tool 入力 4000/出力 8000・検索は `json_extract` 抜き出し＋`substr`（text 8000・input 4000・output/meta 8000・files 2000）。1165発言セッションで約5MBになる
 
 ## 検証（Biome + tsc + node:test）
@@ -40,7 +43,8 @@
 - TS は消去可能構文のみ（`erasableSyntaxOnly`）。import は `.ts` 拡張子付きで書く
 - `test/` から import されるモジュールはトップレベルで DOM に触らない（`node --test` が TS を直接実行するため）
 - push/PR 時に `.github/workflows/check.yml` が `npm run check`＋`npm run build` を実行する
-- 新規 API の数値・ID パラメータは `clampInt` / `clampMs` / `isValidId` で正規化する（素の `Number()` は NaN・負数を通し SQLite エラーや 500 の元になる）
+- `test/fixture.ts` は `:memory:` の共有フィクスチャ（`*.test.ts` ではないのでテスト実行対象外）。HTTP は `handler.test.ts` が一時ポートで実サーバーを立てて検証する（`parseQuery` は不正 URL で throw しないこと）
+- 新規 API の数値・ID パラメータは `clampInt` / `clampMs` / `isValidId` で正規化する（素の `Number()` は NaN・負数を通し SQLite エラーや 500 の元になる）。`limit` は下限1
 - 日本語クエリは必ず URL エンコードする（素の `curl "...?q=日本語&limit=3"` はシェルが `&` を解釈して壊れる）。`curl -G --data-urlencode "q=..."` を使う
 - API: `/api/health` `/api/projects` `/api/sessions` `/api/session/:id` `/api/search` `/api/timeline` `/api/stats`
 - 静的配信の SPA フォールバック（`index.html`）とパストラバーサルガード（`resolveStaticPath`）は残す。素朴な `startsWith(PUBLIC_DIR)` は sibling ディレクトリで突破されるため sep 付き照合が必須

@@ -9,11 +9,16 @@ export function parsePort(raw: string | undefined, fallback = 8083): number {
   return Math.floor(n);
 }
 
-/** クエリ数値を有限の非負整数に正規化する（NaN・負数・Infinity を排除） */
-export function clampInt(raw: string | null, def: number, max: number): number {
+/** クエリ数値を [min, max] の有限整数に正規化する（NaN・Infinity を排除） */
+export function clampInt(
+  raw: string | null,
+  def: number,
+  max: number,
+  min = 0,
+): number {
   const n = Number(raw ?? def);
   if (!Number.isFinite(n)) return def;
-  return Math.min(Math.max(Math.floor(n), 0), max);
+  return Math.min(Math.max(Math.floor(n), min), max);
 }
 
 /** ms epoch を有限の非負整数に正規化する（不正値は 0 = 無指定扱い） */
@@ -59,6 +64,12 @@ export function parseQuery(url: string | undefined): {
   pathname: string;
   params: URLSearchParams;
 } {
-  const u = new URL(url ?? "/", "http://localhost");
-  return { pathname: u.pathname, params: u.searchParams };
+  // 絶対形式の不正 URL（例: "http://["）で new URL が投げると
+  // リクエストハンドラ全体が落ちるため、ここで安全側に倒す
+  try {
+    const u = new URL(url ?? "/", "http://localhost");
+    return { pathname: u.pathname, params: u.searchParams };
+  } catch {
+    return { pathname: "/", params: new URLSearchParams() };
+  }
 }

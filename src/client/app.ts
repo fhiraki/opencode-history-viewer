@@ -15,6 +15,7 @@ import {
 import { resolveNavIndex } from "../shared/nav.ts";
 import {
   highlightTokens,
+  markPlainTextHtml,
   markTermsHtml,
   normalizeTerms,
   renderProse,
@@ -62,17 +63,6 @@ function $button(id: string): HTMLButtonElement {
   if (!(el instanceof HTMLButtonElement))
     throw new Error(`#${id} is not a button`);
   return el;
-}
-function highlightHtml(text: string, terms: string[]): string {
-  let out = esc(text);
-  for (const raw of normalizeTerms(terms)) {
-    // 長大な検索語は正規表現の爆発を招くため切り詰める（normalizeTerms 済み）
-    const e = esc(raw).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    try {
-      out = out.replace(new RegExp(`(${e})`, "gi"), "<mark>$1</mark>");
-    } catch {}
-  }
-  return out;
 }
 function searchTerms() {
   return normalizeTerms(state.highlight);
@@ -207,7 +197,9 @@ document.querySelectorAll<HTMLButtonElement>(".tabs button").forEach((b) => {
 function switchTab(name: string): void {
   state.tab = name;
   document.querySelectorAll<HTMLButtonElement>(".tabs button").forEach((b) => {
-    b.classList.toggle("active", b.dataset.tab === name);
+    const active = b.dataset.tab === name;
+    b.classList.toggle("active", active);
+    b.setAttribute("aria-selected", active ? "true" : "false");
   });
   document.querySelectorAll(".tab").forEach((s) => {
     s.classList.toggle("active", s.id === `tab-${name}`);
@@ -262,11 +254,23 @@ async function loadSessions() {
     params.set("from", String(start));
     params.set("to", String(end));
   }
-  const data = await api<{
-    sessions: SessionItem[];
-    total: number;
-    home?: string;
-  }>(`/api/sessions?${params}`);
+  let data: { sessions: SessionItem[]; total: number; home?: string };
+  try {
+    data = await api<{
+      sessions: SessionItem[];
+      total: number;
+      home?: string;
+    }>(`/api/sessions?${params}`);
+  } catch (e) {
+    if (my !== sessionSeq) return;
+    $("sessionList").innerHTML =
+      `<p>Failed to load sessions: ${esc(e instanceof Error ? e.message : String(e))}</p>`;
+    $("sessionCount").textContent = "";
+    $("pageInfo").textContent = "";
+    $button("prevPage").disabled = true;
+    $button("nextPage").disabled = true;
+    return;
+  }
   if (my !== sessionSeq) return;
   state.sessions = data.sessions;
   state.total = data.total;
@@ -715,7 +719,7 @@ async function loadSearch() {
       <div class="hit-head"><span class="role${hitRoleClass}">${esc(hitRole)}</span><strong>${esc(h.session_title || "(Untitled)")}</strong>
       <span class="muted">[${esc(h.part_type)}${h.tool ? `:${esc(h.tool)}` : ""}] ${fmtTime(h.time_created)}</span></div>
       <div class="muted">${esc(shortenHome(h.directory || "", state.home))}</div>
-      <div class="snippet">${highlightHtml(h.snippet || "", terms)}</div>`;
+      <div class="snippet">${markPlainTextHtml(h.snippet || "", terms)}</div>`;
     const openHit = async () => {
       switchTab("sessions");
       await selectSession(h.session_id, state.searchQ, {
@@ -768,17 +772,30 @@ async function loadTimeline() {
   for (const d of days) {
     const row = document.createElement("div");
     row.className = `day-row${state.timelineDay === d.date ? " selected" : ""}`;
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
+    row.setAttribute(
+      "aria-pressed",
+      state.timelineDay === d.date ? "true" : "false",
+    );
     const pct = Math.round((d.messages / maxMsg) * 100);
     row.innerHTML = `<div><strong>${esc(fmtDayWithWeekday(d.date))}</strong></div>
       <div class="bar"><div style="width:${pct}%"></div></div>
       <div class="muted">${fmtCount(d.sessions)} sessions · ${fmtCount(d.messages)} messages · ${esc(fmtCost(d.cost || 0))}</div>`;
     row.title = (d.titles || []).join(" / ");
-    row.addEventListener("click", async () => {
+    const toggleDay = async () => {
       state.timelineDay = state.timelineDay === d.date ? "" : d.date;
       state.offset = 0;
       await loadSessions();
       loadTimeline();
       if (state.timelineDay) switchTab("sessions");
+    };
+    row.addEventListener("click", toggleDay);
+    row.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggleDay();
+      }
     });
     el.appendChild(row);
   }

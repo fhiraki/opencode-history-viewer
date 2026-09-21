@@ -62,7 +62,7 @@ interface PartRaw {
 }
 
 /** LIKE 用エスケープ */
-function escapeLike(s: string): string {
+export function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (m) => `\\${m}`);
 }
 
@@ -134,8 +134,11 @@ export function listSessions(
     params.push(Number(to));
   }
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  // 同一タイムスタンプの行があっても順序が揺れないよう id を第2キーにする
   const order =
-    sort === "created" ? `s.time_created DESC` : `s.time_updated DESC`;
+    sort === "created"
+      ? `s.time_created DESC, s.id DESC`
+      : `s.time_updated DESC, s.id DESC`;
 
   const total =
     (db
@@ -355,18 +358,44 @@ export function searchParts(
   if (!query) return { total: 0, hits: [] };
   const terms = query.split(/\s+/).filter(Boolean).slice(0, 8);
 
-  const likeConds = terms.map(() => `p.data LIKE ? ESCAPE '\\'`).join(" AND ");
-  const params: (string | number)[] = terms.map((t) => `%${escapeLike(t)}%`);
+  // 生 JSON への LIKE は "type" / "state" 等のキー名にも当たるため、
+  // 安価な prefilter（p.data LIKE）で候補を絞ってから表示対象フィールドだけを照合する。
+  // tool は表示される state（input/output/metadata 等）全体、patch は files が対象。
+  // fieldCond は ? を4個取り、termConds は prefilter を含め1語あたり5パラメータになる。
+  const fieldCond = `(
+      (json_extract(p.data, '$.type') IN ('text','reasoning') AND json_extract(p.data, '$.text') LIKE ? ESCAPE '\\')
+      OR (json_extract(p.data, '$.type') = 'tool' AND (
+        COALESCE(json_extract(p.data, '$.title'), '') LIKE ? ESCAPE '\\'
+        OR json_extract(p.data, '$.state') LIKE ? ESCAPE '\\'
+      ))
+      OR (json_extract(p.data, '$.type') = 'patch' AND json_extract(p.data, '$.files') LIKE ? ESCAPE '\\')
+    )`;
+  const termConds = terms
+    .map(() => `(p.data LIKE ? ESCAPE '\\' AND ${fieldCond})`)
+    .join(" AND ");
+  const params: (string | number)[] = terms.flatMap((t) => {
+    const pattern = `%${escapeLike(t)}%`;
+    // 生 JSON では " や \ がエスケープされているため prefilter 側も JSON 表記に合わせる
+    const prefilter = `%${escapeLike(JSON.stringify(t).slice(1, -1))}%`;
+    return [prefilter, pattern, pattern, pattern, pattern];
+  });
   const projCond = project ? `AND s.project_id = ?` : "";
   if (project) params.push(project);
 
-  // 総件数（軽量化のため上限付きカウントはせず COUNT する。5万件規模なので十分速い）
+  // 総件数（LIKE の全走査が支配的なため COUNT 専用の最適化はしない）
   const countSql = `SELECT COUNT(*) AS c FROM part p JOIN session s ON s.id = p.session_id
-    WHERE ${likeConds} ${projCond}
-      AND json_extract(p.data, '$.type') IN ('text','tool','reasoning','patch')`;
+    WHERE ${termConds} ${projCond}`;
   const total = (db.prepare(countSql).get(...params)?.c as number) ?? 0;
 
-  const sql = `SELECT p.session_id, p.message_id, p.id AS part_id, p.time_created,
+  // 先に該当 part の id だけを並べ替えて 50 件に絞り、JSON 抜き出しはその 50 件にだけ行う
+  // （全ヒット行に対して json_extract/substr すると巨大 JSON で数秒かかる）
+  const sql = `WITH picked AS (
+    SELECT p.id AS pid, p.time_created AS ptc
+    FROM part p JOIN session s ON s.id = p.session_id
+    WHERE ${termConds} ${projCond}
+    ORDER BY p.time_created DESC, p.id DESC LIMIT ? OFFSET ?
+  )
+  SELECT p.session_id, p.message_id, p.id AS part_id, p.time_created,
       json_extract(p.data, '$.type') AS ptype,
       json_extract(p.data, '$.tool') AS ptool,
       COALESCE(json_extract(p.data, '$.title'), json_extract(p.data, '$.state.title')) AS ptitle,
@@ -377,10 +406,11 @@ export function searchParts(
       substr(json_extract(p.data, '$.state.metadata.output'), 1, 8000) AS t_metaout,
       substr(json_extract(p.data, '$.files'), 1, 2000) AS t_files,
       s.title AS session_title, s.directory, s.project_id
-    FROM part p JOIN session s ON s.id = p.session_id LEFT JOIN message m ON m.id = p.message_id
-    WHERE ${likeConds} ${projCond}
-      AND json_extract(p.data, '$.type') IN ('text','tool','reasoning','patch')
-    ORDER BY p.time_created DESC LIMIT ? OFFSET ?`;
+    FROM picked
+    JOIN part p ON p.id = picked.pid
+    JOIN session s ON s.id = p.session_id
+    LEFT JOIN message m ON m.id = p.message_id
+    ORDER BY picked.ptc DESC, picked.pid DESC`;
   const rows = db.prepare(sql).all(...params, Number(limit), Number(offset));
 
   const lowerTerms = terms.map((t) => t.toLowerCase());
@@ -416,19 +446,14 @@ export function searchParts(
       title: ptitle,
       role,
       time_created: r.time_created,
-      snippet: snippet.text,
-      matchPos: snippet.pos,
+      snippet,
     };
   });
   return { total, hits };
 }
 
-function makeSnippet(
-  full: string,
-  lowerTerms: string[],
-  radius = 120,
-): { text: string; pos: number } {
-  if (!full) return { text: "", pos: -1 };
+function makeSnippet(full: string, lowerTerms: string[], radius = 120): string {
+  if (!full) return "";
   const lower = full.toLowerCase();
   let best = -1;
   let bestLen = 0;
@@ -439,11 +464,11 @@ function makeSnippet(
       bestLen = t.length;
     }
   }
-  if (best === -1) return { text: full.slice(0, radius * 2), pos: -1 };
+  if (best === -1) return full.slice(0, radius * 2);
   const start = Math.max(0, best - radius);
   const end = Math.min(full.length, best + radius + bestLen);
   const prefix = start > 0 ? "…" : "";
-  return { text: prefix + full.slice(start, end), pos: best - start };
+  return prefix + full.slice(start, end);
 }
 
 export function getTimeline(
