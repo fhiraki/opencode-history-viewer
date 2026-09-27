@@ -20,4 +20,12 @@ describe("resolveNavIndex", () => {
     assert.equal(resolveNavIndex([10, 80, 200], 80), 1);
     assert.equal(resolveNavIndex([10, 81, 200], 80), 0);
   });
+  it("falls back to a zero threshold for non-finite values", () => {
+    // NaN は比較が全部 false になるため limit 0 と同値（先頭より上＝先頭選択）
+    assert.equal(resolveNavIndex([-30, -10, 5], Number.NaN), 1);
+    assert.equal(resolveNavIndex([10, 20, 30], Number.NaN), 0);
+    // Infinity は全アンカーを通過して末尾へ張り付くのを防ぐ
+    assert.equal(resolveNavIndex([10, 20, 30], Number.POSITIVE_INFINITY), 0);
+    assert.equal(resolveNavIndex([-30, -10, 5], Number.POSITIVE_INFINITY), 1);
+  });
 });

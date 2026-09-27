@@ -25,6 +25,9 @@ describe("fmtTime", () => {
   });
   it("returns - for missing values", () => {
     assert.equal(fmtTime(0), "-");
+    // NaN / Infinity は Date にできないため同じく "-"（そのまま表示されない）
+    assert.equal(fmtTime(Number.NaN), "-");
+    assert.equal(fmtTime(Number.POSITIVE_INFINITY), "-");
   });
 });
 
@@ -42,6 +45,25 @@ describe("parseModel / modelText", () => {
   });
   it("falls back to plain strings", () => {
     assert.equal(modelText("legacy-model"), "legacy-model");
+  });
+  it("accepts an already-parsed object", () => {
+    const model = { providerID: "p", id: "m", variant: "x" };
+    const expected = { provider: "p", id: "m", variant: "x" };
+    assert.deepEqual(parseModel(model), expected);
+    // 文字列として受け取っても同じ形に畳める
+    assert.deepEqual(parseModel('{"id":"m","providerID":"p"}'), {
+      provider: "p",
+      id: "m",
+      variant: "",
+    });
+  });
+  it("falls back to modelID when the id key is missing", () => {
+    const raw = '{"providerID":"p","modelID":"m2"}';
+    const expected = { provider: "p", id: "m2", variant: "" };
+    assert.deepEqual(parseModel(raw), expected);
+    assert.equal(modelText('{"modelID":"only"}'), "only");
+    // JSON でない文字列はプレーン文字列として id に載る
+    assert.equal(parseModel("not json")?.id, "not json");
   });
   it("hides the default variant and empty models", () => {
     assert.equal(
@@ -97,6 +119,16 @@ describe("fmtDuration / fmtRange", () => {
     const to = new Date(2026, 8, 18, 1, 8).getTime();
     assert.equal(fmtRange(from, to), "9/18 0:13 → 1:08 (55 min)");
   });
+  it("renders both dates when the range crosses midnight", () => {
+    const from = new Date(2026, 8, 17, 23, 0).getTime();
+    const to = new Date(2026, 8, 18, 1, 0).getTime();
+    assert.equal(fmtRange(from, to), "9/17 23:00 → 9/18 1:00 (2h)");
+  });
+  it("keeps the same-day form even when the clock rolls over", () => {
+    const from = new Date(2026, 8, 18, 23, 30).getTime();
+    const to = new Date(2026, 8, 18, 23, 45).getTime();
+    assert.equal(fmtRange(from, to), "9/18 23:30 → 23:45 (15 min)");
+  });
 });
 
 describe("fmtDayWithWeekday", () => {
@@ -115,6 +147,11 @@ describe("fmtDayWithWeekday", () => {
 describe("esc / prettyJson", () => {
   it("escapes HTML special chars", () => {
     assert.equal(esc('<a href="x">&'), "&lt;a href=&quot;x&quot;&gt;&amp;");
+    // シングルクォートはエスケープしない（属性の区切りに使わないため）
+    assert.equal(esc("'"), "'");
+    assert.equal(esc("it's"), "it's");
+    assert.equal(esc(null), "");
+    assert.equal(esc(undefined), "");
   });
   it("pretty-prints JSON and passes through the rest", () => {
     assert.equal(prettyJson('{"a":1}'), '{\n  "a": 1\n}');

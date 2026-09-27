@@ -25,6 +25,17 @@ describe("normalizeLang", () => {
     assert.equal(normalizeLang("", "+ added\n- removed"), "diff");
     assert.equal(normalizeLang("", "just text"), "plaintext");
   });
+  it("skips auto-detection once the code exceeds 50000 chars", () => {
+    // auto 判定のガードは trimmed.length > 50000（highlight.ts）。
+    // ちょうど 50000 までは JSON として判定し、1 字超過で plaintext に戻る
+    const jsonOf = (n: number): string => JSON.stringify({ b: "x".repeat(n) });
+    assert.equal(jsonOf(49_992).length, 50_000);
+    assert.equal(normalizeLang("", jsonOf(49_992)), "json");
+    assert.equal(jsonOf(49_993).length, 50_001);
+    assert.equal(normalizeLang("", jsonOf(49_993)), "plaintext");
+    // ガード後は巨大でも失敗しない（JSON.parse を通さない）
+    assert.equal(normalizeLang("", jsonOf(49_993)).includes("json"), false);
+  });
   it("does not mistake bullet lists or rules for diff", () => {
     // 同符号の `- ` 行が2つあるだけでは diff にしない（旧実装の誤判定）
     assert.equal(normalizeLang("", "- alpha\n- beta"), "plaintext");
@@ -260,5 +271,27 @@ describe("renderProse links", () => {
   it("renders relative URLs as plain text without links", () => {
     assert.equal(renderProse("[rel](./other.md)", []).includes("<a"), false);
     assert.equal(renderProse("[frag](#sec)", []).includes("<a"), false);
+  });
+  it("keeps http, https and mailto links", () => {
+    const mail = renderProse("[mail](mailto:a@example.com)", []);
+    assert.ok(mail.includes('<a href="mailto:a@example.com"'));
+    assert.ok(mail.includes('rel="noopener noreferrer"'));
+    const page = renderProse("[page](https://example.com/x)", []);
+    assert.ok(page.includes('<a href="https://example.com/x"'));
+  });
+  it("drops links whose URL contains whitespace", () => {
+    // mdSanitizeUrl は空白を含む URL を拒否する。
+    // marked は <> で包んだ空白入りリンク先をそのまま href に渡してくる
+    const out = renderProse("[x](<http://exa mple.com>)", []);
+    assert.equal(out.includes("<a"), false);
+    assert.match(out, /<p>x<\/p>/);
+  });
+  it("drops every scheme other than http, https and mailto", () => {
+    const ftp = renderProse("[x](ftp://a/b)", []);
+    assert.equal(ftp.includes("<a"), false);
+    const data = renderProse("[x](data:text/html,y)", []);
+    assert.equal(data.includes("<a"), false);
+    const js = renderProse("[x](javascript:alert(1))", []);
+    assert.equal(js.includes("<a"), false);
   });
 });
