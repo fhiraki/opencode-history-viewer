@@ -50,7 +50,7 @@ describe("listSessions preview", () => {
       db.close();
     }
   });
-  it("orders by time_updated DESC, then id DESC by default", () => {
+  it("orders by time_updated DESC by default, and by time_created when asked", () => {
     const db = fixture();
     try {
       const { total } = listSessions(db, {});
@@ -280,6 +280,8 @@ describe("searchParts snippet", () => {
       assert.equal(snippet.slice(128), "b".repeat(120));
       // 開始側が 0 なら "…" は付かない（fixture の先頭ヒットで確認）
       const head = searchParts(db, { q: "toofar" });
+      assert.equal(head.total, 1);
+      assert.equal(String(head.hits[0]?.part_id), "p5");
       assert.equal(String(head.hits[0]?.snippet).startsWith("…"), false);
     } finally {
       db.close();
@@ -322,6 +324,21 @@ describe("searchParts snippet", () => {
   it("treats % and _ literally via escapeLike", () => {
     const db = fixture();
     try {
+      // エスケープが効いていなければ decoy までヒットする。存在しない語だけを
+      // 使っているとエスケープを外しても同じ結果になり、検証力が無い
+      db.prepare(
+        `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(
+        "decoyEsc",
+        "m1",
+        "s1",
+        1,
+        1,
+        JSON.stringify({ type: "text", text: "progress 100Z1 decoy" }),
+      );
+      // decoy が実際に検索で引っかかる（＝上の2件がエスケープの効きで分かれている）
+      assert.equal(searchParts(db, { q: "decoy" }).total, 1);
       assert.equal(searchParts(db, { q: "100%" }).total, 1);
       assert.equal(searchParts(db, { q: "100_1" }).total, 0);
     } finally {

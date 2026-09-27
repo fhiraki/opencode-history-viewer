@@ -58,32 +58,42 @@ async function withServer(
   opts: { breakDb?: boolean } = {},
 ): Promise<void> {
   const publicDir = await fsp.mkdtemp(path.join(os.tmpdir(), "ocv-public-"));
-  await fsp.writeFile(
-    path.join(publicDir, "index.html"),
-    "<!doctype html><title>test</title>",
-  );
   const db: DatabaseSync = fixture();
   const originalError = console.error;
-  if (opts.breakDb) {
-    db.prepare = (): never => {
-      throw new Error("synthetic prepare failure");
-    };
-    // ハンドラの console.error（スタックトレース付き）をテスト出力に混ぜない
-    console.error = (): void => {
-      // 握りつぶす（500 の検証は戻り値で行う）
-    };
-  }
-  const server = http.createServer(
-    createHandler(db, { publicDir, home: os.homedir() }),
-  );
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address() as AddressInfo;
+  let server: http.Server | null = null;
   try {
+    await fsp.writeFile(
+      path.join(publicDir, "index.html"),
+      "<!doctype html><title>test</title>",
+    );
+    if (opts.breakDb) {
+      db.prepare = (): never => {
+        throw new Error("synthetic prepare failure");
+      };
+      // ハンドラの console.error（スタックトレース付き）をテスト出力に混ぜない
+      console.error = (): void => {
+        // 握りつぶす（500 の検証は戻り値で行う）
+      };
+    }
+    const srv = http.createServer(
+      createHandler(db, { publicDir, home: os.homedir() }),
+    );
+    server = srv;
+    await new Promise<void>((resolve, reject) => {
+      srv.once("error", reject);
+      srv.listen(0, "127.0.0.1", resolve);
+    });
+    const { port } = srv.address() as AddressInfo;
     await fn(`http://127.0.0.1:${port}`, port, publicDir);
   } finally {
+    // mkdtemp 直後から try に入れ、listen が throw しても console.error の
+    // 差し替えと tmpdir が残らないようにする
     console.error = originalError;
-    server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (server) {
+      const srv = server;
+      srv.closeAllConnections();
+      await new Promise<void>((resolve) => srv.close(() => resolve()));
+    }
     db.close();
     await fsp.rm(publicDir, { recursive: true, force: true });
   }

@@ -124,7 +124,7 @@ describe("fmtDuration / fmtRange", () => {
     const to = new Date(2026, 8, 18, 1, 0).getTime();
     assert.equal(fmtRange(from, to), "9/17 23:00 → 9/18 1:00 (2h)");
   });
-  it("keeps the same-day form even when the clock rolls over", () => {
+  it("keeps the same-day form for a late-evening span", () => {
     const from = new Date(2026, 8, 18, 23, 30).getTime();
     const to = new Date(2026, 8, 18, 23, 45).getTime();
     assert.equal(fmtRange(from, to), "9/18 23:30 → 23:45 (15 min)");

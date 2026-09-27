@@ -33,8 +33,7 @@ describe("normalizeLang", () => {
     assert.equal(normalizeLang("", jsonOf(49_992)), "json");
     assert.equal(jsonOf(49_993).length, 50_001);
     assert.equal(normalizeLang("", jsonOf(49_993)), "plaintext");
-    // ガード後は巨大でも失敗しない（JSON.parse を通さない）
-    assert.equal(normalizeLang("", jsonOf(49_993)).includes("json"), false);
+    // ガード後は巨大でも JSON.parse を通さず失敗しない
   });
   it("does not mistake bullet lists or rules for diff", () => {
     // 同符号の `- ` 行が2つあるだけでは diff にしない（旧実装の誤判定）
