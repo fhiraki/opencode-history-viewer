@@ -15,8 +15,15 @@ rmSync(path.join(ROOT, "public", "dist"), { recursive: true, force: true });
 
 // entryPoints / outdir は esbuild.config.mjs で相対パスのままなので、
 // 同じ ROOT 基準で解決するため absWorkingDir を渡す
-const client = await esbuild.context({ ...clientConfig, absWorkingDir: ROOT });
-const server = await esbuild.context({ ...serverConfig, absWorkingDir: ROOT });
+// esbuild.config.mjs の export はリテラルが widen されたままなので、
+// 渡し境界で any を噛ませる（scripts/dev.mjs と同方針。tsc の checkJs 対象に
+// 入れるための前提）
+/** @type {any} */
+const clientOptions = { ...clientConfig, absWorkingDir: ROOT };
+/** @type {any} */
+const serverOptions = { ...serverConfig, absWorkingDir: ROOT };
+const client = await esbuild.context(clientOptions);
+const server = await esbuild.context(serverOptions);
 
 await client.rebuild();
 await server.rebuild();

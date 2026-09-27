@@ -26,7 +26,7 @@ It opens `~/.local/share/opencode/opencode.db` in **read-only** mode and lets yo
 git clone <this-repo-url>
 cd opencode-viewer
 npm install
-npm start        # builds, then open http://127.0.0.1:8083
+npm start        # builds, then starts the server (the URL is printed in the log)
 ```
 
 Open `http://127.0.0.1:8083` in your browser. Press `Ctrl+C` to stop.
@@ -56,7 +56,7 @@ If the DB file is missing, the server exits with an error and tells you to set `
 ### Features
 
 - **Sessions**: filter by title / directory / project, sorted by updated or created. Selecting a session replays the conversation, tool calls, and reasoning steps in chronological order.
-- **Search**: full-text search over message bodies, tool inputs/outputs, and reasoning text (space-separated terms are ANDed). Click a result to jump to the session with the match highlighted.
+- **Search**: full-text search over message bodies, tool inputs/outputs, reasoning text, tool titles, and patch file lists (space-separated terms are ANDed). Click a result to jump to the session with the match highlighted.
 - **Timeline**: per-day counts of sessions, messages, and cost. Click a day to filter the session list.
 - **Stats**: totals for sessions / messages / cost / tokens, plus per-project, per-model, and top-tools breakdowns.
 
@@ -93,6 +93,14 @@ npm run check      # Biome + tsc --noEmit + unit tests
 npm test           # node:test unit tests only
 npm run build      # build frontend (public/dist) and server (dist)
 npm run format     # auto-fix with Biome
+```
+
+Install scripts are governed by the top-level `allowScripts` field in `package.json`. The `esbuild` entry is name-only (not pinned as `esbuild@0.28.2`), so a `^0.28.2` → `0.29.x` bump does not silently drop its approval. npm lists packages whose install scripts have not been reviewed yet; approve them with:
+
+```sh
+npm approve-scripts --allow-scripts-pending           # list what is pending (read-only)
+npm approve-scripts esbuild                           # pin to the installed version
+npm approve-scripts --no-allow-scripts-pin esbuild    # name-only (allows any version)
 ```
 
 Layout:
@@ -137,7 +145,7 @@ OpenCode の履歴をローカルで振り返るための Web ビューワーで
 git clone <this-repo-url>
 cd opencode-viewer
 npm install
-npm start        # ビルド後に http://127.0.0.1:8083 を開く
+npm start        # ビルド後にサーバーを起動（URL はログに出る）
 ```
 
 ブラウザで `http://127.0.0.1:8083` を開きます。終了は `Ctrl+C` です。
@@ -167,7 +175,7 @@ DB ファイルが存在しない場合、サーバーはエラーを表示し�
 ### 機能
 
 - **セッション**: タイトル・ディレクトリ・プロジェクトで絞り込み、更新順／作成順に一覧表示。選択すると当時の会話・ツール呼び出し・推論過程を時系列で再現します
-- **検索**: 本文・ツール入出力・推論テキストから全文検索（スペース区切りは AND）。結果クリックで該当セッションへジャンプしハイライト表示します
+- **検索**: 本文・ツール入出力・推論テキスト・ツールタイトル・パッチのファイル一覧から全文検索（スペース区切りは AND）。結果クリックで該当セッションへジャンプしハイライト表示します
 - **タイムライン**: 日別にセッション数・発言数・コストを集計。日をクリックするとその日のセッションに絞り込めます
 - **統計**: 総セッション数・メッセージ数・コスト・トークン、プロジェクト別・モデル別集計、ツール利用 TOP を表示します
 
@@ -204,6 +212,14 @@ npm run check      # Biome + tsc --noEmit + 単体テスト
 npm test           # node:test による単体テストのみ
 npm run build      # フロント（public/dist）とサーバー（dist）を生成
 npm run format     # Biome による自動修正
+```
+
+install script の実行可否は `package.json` 直下の `allowScripts` で管理しています。`esbuild` は name-only（`esbuild@0.28.2` のようにピン留めしない）で登録しているため、`^0.28.2` から `0.29.x` に上がっても承認が外れません。未レビューのパッケージは install 時に通知されるので、次のコマンドで承認します。
+
+```sh
+npm approve-scripts --allow-scripts-pending           # 未承認の一覧（読み取り専用）
+npm approve-scripts esbuild                           # インストール済みバージョンでピン留め
+npm approve-scripts --no-allow-scripts-pin esbuild    # name-only（全バージョン許可）
 ```
 
 構成:

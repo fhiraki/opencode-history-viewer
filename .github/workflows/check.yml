@@ -1,7 +1,9 @@
 name: check
 
 on:
+  # push は main 限定。全ブランチだと同リポジトリの PR でも push 分が走り2重になる
   push:
+    branches: [main]
   pull_request:
 
 permissions:

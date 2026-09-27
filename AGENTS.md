@@ -13,6 +13,7 @@
 ## コマンド
 - Node >= 24 必須（`node:sqlite` の `DatabaseSync` を使用）
 - `npm install` 必須。ランタイム依存はゼロ。新規ライブラリは devDependencies に追加し、esbuild（`scripts/esbuild.config.mjs` の client/server）でバンドルする。`dependencies` には入れない
+- devDependencies 追加時は `package.json` の `allowScripts`（name-only）で承認する。未承認だと `npm install` が警告付きになる（手順は README 英日の開発節）
 - `npm start`（`prestart` で自動ビルド）/ `npm run dev`（esbuild watch＋`node --watch`）/ `npm run build`
 - `scripts/build.mjs` は成果物の削除・解決を `import.meta.dirname` 基準（`absWorkingDir` で entryPoints/outdir も揃える）で行い、CWD に依存しない（CWD 相対だと別ディレクトリ実行でそのプロジェクトの `dist/` を消す）
 - `PORT`（既定 8083）、`OPENCODE_DB` で DB パス上書き可
@@ -57,14 +58,14 @@
 ## 検証（Biome + tsc + node:test）
 - `npm run check` が正（Biome＋`tsc --noEmit`＋`node --test test/*.test.ts`）。修正は `npm run format`
 - テストを絞る: `node --test test/db.test.ts` / `node --test --test-name-pattern="getStats" test/*.test.ts`
-- Node 24 は `--test` のディレクトリ指定不可のため glob 形式を維持する（CI は 24/26 マトリクス）。`engines >= 24` の下限保証を崩さない
+- Node 24 は `--test` のディレクトリ指定不可のため glob 形式を維持する（CI は 24/26 マトリクス）。`engines >= 24` の下限保証を崩さない。`--test-timeout=60000` は無応答回帰で CI が無限待ちに潰れないための保険。削除しない
 - 日付表示のテストは固定 epoch で assert しない（CI は UTC で日付がずれる）。`new Date(2026, 8, 18, 12, 0)` のようにローカル時刻で組み立てる
 - テストに個人のパスをハードコードしない（public リポジトリのため）。ホーム配下は `os.homedir()` から組み立てる
 - `biome.json` はスペースインデント（既存コードに合わせている。tab に変えない）
 - `tsconfig` の `types: ["node"]` は消さない（外すと `node:sqlite` 等の型解決が壊れる）
 - TS は消去可能構文のみ（`erasableSyntaxOnly`）。import は `.ts` 拡張子付きで書く
 - `test/` から import されるモジュールはトップレベルで DOM に触らない（`node --test` が TS を直接実行するため）
-- push/PR 時に `.github/workflows/check.yml` が `npm run check`＋`npm run build` を実行する
+- main への push と PR 時に `.github/workflows/check.yml` が `npm run check`＋`npm run build` を実行する（push の対象を main に絞っている＝他ブランチへの直接 push は CI が走らない）
 - `test/fixture.ts` は `:memory:` の共有フィクスチャ（`*.test.ts` ではないのでテスト実行対象外）。HTTP は `handler.test.ts` が一時ポートで実サーバーを立てて検証する（`parseQuery` は不正 URL で throw しないこと）
 - 新規 API の数値・ID パラメータは `clampInt` / `clampMs` / `isValidId` で正規化する（素の `Number()` は NaN・負数を通し SQLite エラーや 500 の元になる）。`limit` は下限1
 - 日本語クエリは必ず URL エンコードする（素の `curl "...?q=日本語&limit=3"` はシェルが `&` を解釈して壊れる）。`curl -G --data-urlencode "q=..."` を使う
@@ -83,3 +84,4 @@
 - ツール入出力の highlight.js は描画時に一括実行しない。`.lazy-hl`＋`data-lang` のプレースホルダ（エスケープ済みテキスト）で描画し、`toggle` で `hydrateLazyHighlights` が開いた分だけハイライトする
 - ナビのアンカー位置は `navOffsets`（コンテナ内容座標）にキャッシュし、`details` 開閉・`resize`・`fonts.ready` で無効化する。スクロール毎に全アンカーの `getBoundingClientRect` を測らない
 - Stats は同一ページ表示中 `statsCache` を使う（Sessions の Reload で破棄）。タブ切替のたびに再取得しない
+- セッション一覧の更新は `renderSessionList`（innerHTML 全生成）と `updateSessionMeta` / `syncSelection`（件数・ページ情報・選択 class のみ）に分離。選択変更のたびに全再構築しない（スクロール位置と DOM 構築コスト）。詳細ペインへの `focus` は検索ジャンプ時のみ（一覧クリックで奪うと Shift+Tab が一覧末尾へ飛ぶ）

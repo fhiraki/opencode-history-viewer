@@ -121,6 +121,9 @@ interface ApiPart {
   title?: string;
   status?: string;
   input?: string;
+  inputTruncated?: boolean;
+  // サーバー（src/db.ts normalizePart）は全文長を返さないため、Input 見出しは
+  // "(truncated)" のみ出す（N を捏造しない）
   output?: string;
   outputTruncated?: boolean;
   outputFullLength?: number;
@@ -289,9 +292,8 @@ async function loadSessions() {
   renderSessionList();
 }
 
-function renderSessionList() {
-  const el = $("sessionList");
-  el.innerHTML = "";
+// 一覧の件数・ページ情報・ページボタン（データ更新時 = renderSessionList のみから呼ぶ）
+function updateSessionMeta(): void {
   $("sessionCount").textContent =
     `${fmtCount(state.total)} sessions${state.timelineDay ? ` (${fmtDayWithWeekday(state.timelineDay)})` : ""}`;
   $("pageInfo").textContent =
@@ -300,14 +302,33 @@ function renderSessionList() {
       : `${fmtCount(state.offset + 1)}–${fmtCount(Math.min(state.offset + state.limit, state.total))} / ${fmtCount(state.total)}`;
   $button("prevPage").disabled = state.offset <= 0;
   $button("nextPage").disabled = state.offset + state.limit >= state.total;
+}
+
+// 選択の付け替えは .selected の class 操作だけで済むため、50件ぶんの DOM を
+// 再生成しない（innerHTML 全書き換えはデータ更新時だけ行う）
+function syncSelection(): void {
+  const items = $("sessionList").querySelectorAll(".session-item");
+  for (const el of items) {
+    if (!(el instanceof HTMLElement)) continue;
+    const selected = el.dataset.sessionId === state.selectedId;
+    el.classList.toggle("selected", selected);
+  }
+}
+
+function renderSessionList() {
+  const el = $("sessionList");
+  el.innerHTML = "";
+  updateSessionMeta();
   for (const s of state.sessions) {
     const b = document.createElement("button");
     b.className = `session-item${s.id === state.selectedId ? " selected" : ""}`;
+    b.dataset.sessionId = s.id;
+    // <button> の content model は phrasing content のみのため div は使わない
     b.innerHTML = `
       <span class="msg-badge" title="${fmtExact(s.messageCount)} messages"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3.5h11v6.5H8.2L5 12.5v-2.5H2.5z" /></svg>${fmtCount(s.messageCount)}</span>
-      <div class="title">${esc(s.title || "(Untitled)")}</div>
-      <div class="meta">${esc(shortenHome(s.directory || "", state.home))} · ${fmtTime(state.timelineDay ? s.time_created : s.time_updated)}</div>
-      ${s.preview ? `<div class="preview">${esc(s.preview.slice(0, 160))}</div>` : ""}`;
+      <span class="title">${esc(s.title || "(Untitled)")}</span>
+      <span class="meta">${esc(shortenHome(s.directory || "", state.home))} · ${fmtTime(state.timelineDay ? s.time_created : s.time_updated)}</span>
+      ${s.preview ? `<span class="preview">${esc(s.preview.slice(0, 160))}</span>` : ""}`;
     b.addEventListener("click", () => selectSession(s.id));
     el.appendChild(b);
   }
@@ -322,10 +343,16 @@ async function selectSession(
 ): Promise<void> {
   state.selectedId = id;
   state.highlight = highlight;
-  renderSessionList();
+  syncSelection();
   const my = ++detailSeq;
   const el = $("sessionDetail");
   el.innerHTML = `<p class="muted">Loading…</p>`;
+  // ロード中に旧アンカーを残さない（buildNav が走る前にカウンターごとリセットし、
+  // navUp/navDown が detached な旧要素から座標を計算しないようにする）
+  navAnchors = [];
+  navPos = 0;
+  navOffsets = null;
+  updateNav();
   try {
     const data = await api<SessionDetail>(
       `/api/session/${encodeURIComponent(id)}`,
@@ -337,9 +364,13 @@ async function selectSession(
     el.innerHTML = `<p>Failed to load: ${esc(e instanceof Error ? e.message : String(e))}</p>`;
   }
   buildNav();
-  if (my !== detailSeq) return;
   if (target?.partId || target?.messageId) {
     scrollToSessionTarget(target);
+    // 検索タブから遷移すると #tab-search が display:none になり、フォーカスが
+    // body へ落ちてキーボード操作の起点を失うため、読み込まれた詳細へ移す。
+    // 一覧クリック時にまで奪うと Shift+Tab が「押した項目の直前」に戻れず
+    // 一覧末尾へ飛ぶので、ジャンプ時のみ行う
+    el.focus({ preventScroll: true });
   } else {
     el.scrollTop = 0;
   }
@@ -415,14 +446,14 @@ function renderDetail(
   const tokReason = Number(session.tokens_reasoning || 0);
   const chips = [
     text
-      ? `<span class="chip model" title="${esc(session.model || "")}"><span class="chip-label">Model</span>${esc(text)}</span>`
+      ? `<span class="chip model" title="${esc(text)}"><span class="chip-label">Model</span>${esc(text)}</span>`
       : "",
     session.agent
       ? `<span class="chip"><span class="chip-label">Agent</span>${esc(session.agent)}</span>`
       : "",
     `<span class="chip cost" title="Exact: $${cost}"><span class="chip-label">Cost</span>${esc(fmtCost(cost))}</span>`,
     `<span class="chip" title="Input ${tokIn.toLocaleString("en-US")} / Output ${tokOut.toLocaleString("en-US")} / Reasoning ${tokReason.toLocaleString("en-US")}"><span class="chip-label">Tokens</span>${esc(fmtCount(tokIn + tokOut + tokReason))}</span>`,
-    `<span class="chip"><span class="chip-label">Messages</span>${fmtCount(messages.length)}</span>`,
+    `<span class="chip" title="${fmtExact(messages.length)}"><span class="chip-label">Messages</span>${fmtCount(messages.length)}</span>`,
   ].join("");
   const head = `
     <h2>${esc(session.title || "(Untitled)")}</h2>
@@ -443,7 +474,8 @@ function groupIntoTurns(messages: ApiMessage[]): ApiMessage[][] {
     if (m.role === "user" || turns.length === 0) turns.push([m]);
     else turns[turns.length - 1].push(m);
   }
-  return turns.filter((t) => t.length > 0);
+  // どの経路でも1件以上を積んでから turn を作るため、長さでの絞り込みは不要
+  return turns;
 }
 
 function plural(n: number, word: string): string {
@@ -533,13 +565,13 @@ function renderMessage(m: ApiMessage, terms: string[]): string {
     // 回答なし（作業のみ）のメッセージは行数を食うため、
     // msg-headと作業ログ概要を1行に合体させ、その行自体を開閉スイッチにする
     if (!answerHtml) {
-      return `<details class="msg assistant-msg work-only" data-message-id="${esc(m.id)}"><summary class="msg-head">${msgHeadInner(m)}
+      return `<details class="msg work-only" data-message-id="${esc(m.id)}"><summary class="msg-head">${msgHeadInner(m)}
       <span class="work-summary">${esc(worklogSummaryText(workParts))}</span></summary><div class="worklog-body">${workHtml}</div></details>`;
     }
     const worklog = workHtml
       ? `<details class="part worklog"><summary>${esc(worklogSummaryText(workParts))}</summary><div class="worklog-body">${workHtml}</div></details>`
       : "";
-    return `<div class="msg assistant-msg" data-message-id="${esc(m.id)}">${head}${answerHtml}${worklog}</div>`;
+    return `<div class="msg" data-message-id="${esc(m.id)}">${head}${answerHtml}${worklog}</div>`;
   }
   if (m.role === "user") {
     const parts = m.parts
@@ -549,15 +581,14 @@ function renderMessage(m: ApiMessage, terms: string[]): string {
     if (!parts) return "";
     return `<div class="msg user-msg" data-message-id="${esc(m.id)}">${head}${parts}</div>`;
   }
-  if (m.role !== "assistant") {
-    const parts = m.parts
-      .map((p) => renderPart(p, terms, m.role))
-      .filter(Boolean)
-      .join("");
-    if (!parts) return "";
-    return `<div class="msg" data-message-id="${esc(m.id)}">${head}${parts}</div>`;
-  }
-  return "";
+  // assistant / user は上で返している。残り（system 等の未知ロール）は
+  // パーツ列をそのまま並べる
+  const parts = m.parts
+    .map((p) => renderPart(p, terms, m.role))
+    .filter(Boolean)
+    .join("");
+  if (!parts) return "";
+  return `<div class="msg" data-message-id="${esc(m.id)}">${head}${parts}</div>`;
 }
 
 function renderAnswerPart(p: ApiPart, terms: string[]): string {
@@ -589,7 +620,7 @@ function renderWorkPart(p: ApiPart, terms: string[]): string {
     // details を開いた時に遅延実行する（全ツール出力を一括で highlight.js に
     // 通すと数秒かかる）。lazy-hl の textContent を hydrate 時に渡す
     return `<details class="part work-item" data-part-id="${esc(p.id)}"><summary>🔧 ${label}</summary>
-      <div class="part-head">Input</div><div class="part-body lazy-hl" data-lang="json">${esc(prettyJson(p.input || ""))}</div>
+      <div class="part-head">Input${p.inputTruncated ? " (truncated)" : ""}</div><div class="part-body lazy-hl" data-lang="json">${esc(prettyJson(p.input || ""))}</div>
       <div class="part-head">Output${p.outputTruncated ? ` (showing part of ${Number(p.outputFullLength || 0).toLocaleString("en-US")} chars)` : ""}</div><div class="part-body lazy-hl" data-lang="${esc(toolOutputLang(p))}">${esc((p.output || "").slice(0, 8000))}</div>
     </details>`;
   }
@@ -622,11 +653,14 @@ function renderWorkPart(p: ApiPart, terms: string[]): string {
 // 遅延ハイライト: details を開いた時に対象の .lazy-hl だけ highlight.js へ通す。
 // 初期表示はエスケープ済みプレーンテキストを置いておく（表示崩れは色だけの差）。
 // 検索語の <mark> はハイライト後に通常と同じ手順で付与する
-function hydrateLazyHighlights(root: ParentNode): void {
+// root は開いた <details> 自身。子 <details> 内の .lazy-hl は対象外にする
+// （開いた分だけハイライトする方針。子 details は自身の toggle でその都度 hydrate される）
+function hydrateLazyHighlights(root: HTMLDetailsElement): void {
   const blocks = root.querySelectorAll<HTMLElement>(".lazy-hl");
   if (!blocks.length) return;
   const terms = searchTerms();
   for (const el of blocks) {
+    if (el.closest("details") !== root) continue;
     const lang = el.dataset.lang || "plaintext";
     el.innerHTML = markTermsHtml(
       highlightTokens(el.textContent || "", lang),
@@ -705,6 +739,7 @@ async function loadSearch() {
   if (!state.searchQ) {
     box.innerHTML = `<p class="muted">Enter keywords to search.</p>`;
     $("searchCount").textContent = "";
+    $("searchCount").title = "";
     $("searchPageInfo").textContent = "";
     $button("searchPrev").disabled = true;
     $button("searchNext").disabled = true;
@@ -726,6 +761,7 @@ async function loadSearch() {
     if (my !== searchSeq) return;
     box.innerHTML = `<p>Search failed: ${esc(e instanceof Error ? e.message : String(e))}</p>`;
     $("searchCount").textContent = "";
+    $("searchCount").title = "";
     $("searchPageInfo").textContent = "";
     $button("searchPrev").disabled = true;
     $button("searchNext").disabled = true;
@@ -735,6 +771,7 @@ async function loadSearch() {
   state.searchTotal = data.total;
   if (data.home) state.home = data.home;
   $("searchCount").textContent = `${fmtCount(data.total)} results`;
+  $("searchCount").title = fmtExact(data.total);
   $("searchPageInfo").textContent =
     data.total === 0
       ? `0 / 0`
@@ -788,7 +825,11 @@ $("searchNext").addEventListener("click", () => {
   loadSearch();
 });
 // ---------- タイムライン ----------
+// 非同期の競合対策: 世代が古い応答（先行したタブ切替・別 project の要求）が
+// 新しい描画を上書きしないよう世代管理する
+let timelineSeq = 0;
 async function loadTimeline() {
+  const my = ++timelineSeq;
   const el = $("timeline");
   el.innerHTML = `<p class="muted">Loading…</p>`;
   const params = new URLSearchParams({ project: state.project });
@@ -796,9 +837,11 @@ async function loadTimeline() {
   try {
     ({ days } = await api<{ days: TimelineDay[] }>(`/api/timeline?${params}`));
   } catch (e) {
+    if (my !== timelineSeq) return;
     el.innerHTML = `<p>Failed to load timeline: ${esc(e instanceof Error ? e.message : String(e))}</p>`;
     return;
   }
+  if (my !== timelineSeq) return;
   el.innerHTML = "";
   if (!days.length) {
     el.innerHTML = `<p class="muted">No data.</p>`;
@@ -815,9 +858,11 @@ async function loadTimeline() {
       state.timelineDay === d.date ? "true" : "false",
     );
     const pct = Math.round((d.messages / maxMsg) * 100);
+    const sessionsExact = fmtExact(d.sessions);
+    const messagesExact = fmtExact(d.messages);
     row.innerHTML = `<div><strong>${esc(fmtDayWithWeekday(d.date))}</strong></div>
       <div class="bar"><div style="width:${pct}%"></div></div>
-      <div class="muted">${fmtCount(d.sessions)} sessions · ${fmtCount(d.messages)} messages · ${esc(fmtCost(d.cost || 0))}</div>`;
+      <div class="muted" title="${sessionsExact} sessions · ${messagesExact} messages">${fmtCount(d.sessions)} sessions · ${fmtCount(d.messages)} messages · ${esc(fmtCost(d.cost || 0))}</div>`;
     row.title = (d.titles || []).join(" / ");
     const toggleDay = async () => {
       state.timelineDay = state.timelineDay === d.date ? "" : d.date;
@@ -1002,7 +1047,7 @@ function renderStats(s: StatsData): void {
     `<table><tr><th>Project</th><th>Sessions</th><th>Last active</th></tr>${s.perProject
       .map(
         (p) =>
-          `<tr><td>${esc(p.worktree || p.id)}</td><td>${fmtCount(p.sessions)}</td><td>${fmtTime(p.lastActive)}</td></tr>`,
+          `<tr><td>${esc(p.worktree || p.id)}</td><td title="${fmtExact(p.sessions)}">${fmtCount(p.sessions)}</td><td>${fmtTime(p.lastActive)}</td></tr>`,
       )
       .join("")}</table>`;
   $("statsModels").innerHTML =
@@ -1013,7 +1058,7 @@ function renderStats(s: StatsData): void {
         const name = r.id
           ? `${r.provider ? `${r.provider}/` : ""}${r.id}`
           : "(Unknown)";
-        return `<tr><td title="${esc(name)}">${esc(name)}</td><td>${fmtCount(r.sessions)}</td><td>${fmtCount(r.messages)}</td><td>${esc(fmtDuration(r.activeMs))}</td><td>${esc(fmtCost(r.cost))}</td><td title="${fmtExact(r.ti + r.tout + r.tr)}">${fmtCount(r.ti + r.tout + r.tr)}</td></tr>`;
+        return `<tr><td title="${esc(name)}">${esc(name)}</td><td title="${fmtExact(r.sessions)}">${fmtCount(r.sessions)}</td><td title="${fmtExact(r.messages)}">${fmtCount(r.messages)}</td><td>${esc(fmtDuration(r.activeMs))}</td><td>${esc(fmtCost(r.cost))}</td><td title="${fmtExact(r.ti + r.tout + r.tr)}">${fmtCount(r.ti + r.tout + r.tr)}</td></tr>`;
       })
       .join("")}</table>`;
   $("statsTools").innerHTML =
@@ -1033,6 +1078,11 @@ try {
   const msg = `<p>Failed to connect to the server: ${esc(e instanceof Error ? e.message : String(e))}</p>`;
   $("sessionList").innerHTML = msg;
   $("sessionDetail").innerHTML = msg;
+  // 1件も一覧が来ていないのでページ送りは押せない（対象ページが無い場合 disabled）
+  $("sessionCount").textContent = "";
+  $("pageInfo").textContent = "";
+  $button("prevPage").disabled = true;
+  $button("nextPage").disabled = true;
 }
 moveTabIndicator();
 window.addEventListener("resize", moveTabIndicator);

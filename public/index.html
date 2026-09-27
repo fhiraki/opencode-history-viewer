@@ -10,16 +10,15 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">
+  <h1 class="brand">
     <span class="brand-mark">
-      <svg viewBox="0 0 16 16" role="img" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round">
-        <title>History</title>
+      <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round">
         <circle cx="8" cy="8" r="6.2" />
         <path d="M8 4.6V8l2.4 1.6" />
       </svg>
     </span>
     <span>OpenCode History Viewer</span>
-  </div>
+  </h1>
   <div class="tabs" role="tablist">
     <span class="tabs-indicator" aria-hidden="true"></span>
     <button type="button" data-tab="sessions" id="tabBtn-sessions" role="tab" aria-selected="true" aria-controls="tab-sessions" class="active">Sessions</button>
@@ -51,7 +50,7 @@
         </div>
       </div>
       <div class="detail-pane">
-        <div id="sessionDetail" class="detail"><p class="muted">Select a session from the list.</p></div>
+        <div id="sessionDetail" class="detail" tabindex="-1"><p class="muted">Select a session from the list.</p></div>
         <div class="msg-nav">
           <button type="button" id="navUp" aria-label="Previous exchange" disabled><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10.5 8 6.5l4 4" /></svg></button>
           <span id="navPos" class="muted"></span>
@@ -63,7 +62,7 @@
 
   <section id="tab-search" class="tab" role="tabpanel" aria-labelledby="tabBtn-search">
     <div class="filters">
-      <input id="searchInput" type="search" placeholder="Search message bodies and tool output (space-separated AND)" />
+      <input id="searchInput" type="search" placeholder="Search message bodies, reasoning, tool titles/output, patch file lists (space-separated AND)" />
       <button type="button" id="searchBtn">Search</button>
       <span id="searchCount" class="muted"></span>
     </div>
@@ -85,11 +84,11 @@
 
   <section id="tab-stats" class="tab" role="tabpanel" aria-labelledby="tabBtn-stats">
     <div id="statsCards" class="cards"></div>
-    <h3>By project</h3>
+    <h2>By project</h2>
     <div id="statsProjects"></div>
-    <h3>By model</h3>
+    <h2>By model</h2>
     <div id="statsModels"></div>
-    <h3>Top tools</h3>
+    <h2>Top tools</h2>
     <div id="statsTools"></div>
   </section>
 </main>
