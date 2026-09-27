@@ -7,7 +7,7 @@
 
 A local-only web viewer for your OpenCode history.
 
-It opens `~/.local/share/opencode/opencode.db` in **read-only** mode and lets you browse past sessions with full-text search, a daily timeline, session replay, and usage stats.
+It opens the OpenCode database (default: `$XDG_DATA_HOME/opencode/opencode.db`; `~/.local/share/opencode/opencode.db` when `XDG_DATA_HOME` is unset) in **read-only** mode and lets you browse past sessions with full-text search, a daily timeline, session replay, and usage stats.
 
 - Zero runtime dependencies (only Node 24+ built-in `node:sqlite`; other packages are build/dev-only and bundled with esbuild)
 - Read-only access to the DB — your history is never modified
@@ -17,7 +17,7 @@ It opens `~/.local/share/opencode/opencode.db` in **read-only** mode and lets yo
 ### Requirements
 
 - Node.js >= 24 (`node --version`)
-- An existing OpenCode database (default: `~/.local/share/opencode/opencode.db`)
+- An existing OpenCode database (default: `$XDG_DATA_HOME/opencode/opencode.db`; `~/.local/share/opencode/opencode.db` when `XDG_DATA_HOME` is unset)
 - `npm install` on first setup (TypeScript / esbuild / marked / highlight.js / Biome are dev-only)
 
 ### Install & Run
@@ -42,7 +42,9 @@ npm run dev
 | Env var      | Default                                    | Description              |
 | ------------ | ------------------------------------------ | ------------------------ |
 | `PORT`       | `8083`                                     | HTTP port to listen on   |
-| `OPENCODE_DB`| `~/.local/share/opencode/opencode.db`      | Path to OpenCode DB file |
+| `OPENCODE_DB`| `$XDG_DATA_HOME/opencode/opencode.db`      | Path to OpenCode DB file |
+
+* When `XDG_DATA_HOME` is unset, the default is `~/.local/share/opencode/opencode.db`.
 
 Examples:
 
@@ -126,7 +128,7 @@ MIT (see `LICENSE`; runtime has no third-party dependencies — all libraries ar
 
 OpenCode の履歴をローカルで振り返るための Web ビューワーです。
 
-`~/.local/share/opencode/opencode.db` を**読み取り専用**で開き、過去セッションの全文検索・日別タイムライン・詳細再現・統計表示ができます。
+OpenCode の DB（既定: `$XDG_DATA_HOME/opencode/opencode.db`、`XDG_DATA_HOME` 未設定時は `~/.local/share/opencode/opencode.db`）を**読み取り専用**で開き、過去セッションの全文検索・日別タイムライン・詳細再現・統計表示ができます。
 
 - ランタイム依存ゼロ（Node 24+ 標準の `node:sqlite` のみ使用。その他のパッケージはビルド・検証用で esbuild によりバンドル）
 - DB は `readOnly` で開くため履歴を壊しません
@@ -136,7 +138,7 @@ OpenCode の履歴をローカルで振り返るための Web ビューワーで
 ### 必要条件
 
 - Node.js 24 以上（`node --version` で確認）
-- OpenCode のデータベースが存在すること（既定: `~/.local/share/opencode/opencode.db`）
+- OpenCode のデータベースが存在すること（既定: `$XDG_DATA_HOME/opencode/opencode.db`、`XDG_DATA_HOME` 未設定時は `~/.local/share/opencode/opencode.db`）
 - 初回のみ `npm install` が必要（TypeScript / esbuild / marked / highlight.js / Biome は開発用依存）
 
 ### インストールと起動
@@ -161,7 +163,9 @@ npm run dev
 | 環境変数       | 既定値                                       | 説明                     |
 | -------------- | -------------------------------------------- | ------------------------ |
 | `PORT`         | `8083`                                       |待ち受ける HTTP ポート    |
-| `OPENCODE_DB`  | `~/.local/share/opencode/opencode.db`        | OpenCode の DB ファイルパス |
+| `OPENCODE_DB`  | `$XDG_DATA_HOME/opencode/opencode.db`        | OpenCode の DB ファイルパス |
+
+* `XDG_DATA_HOME` 未設定時は `~/.local/share/opencode/opencode.db`。
 
 例:
 

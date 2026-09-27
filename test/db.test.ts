@@ -1161,19 +1161,28 @@ describe("openDb / defaultDbPath", () => {
     }
   });
 
-  it("prefers OPENCODE_DB over the default XDG path", () => {
+  it("prefers OPENCODE_DB, then XDG_DATA_HOME, then the legacy fallback", () => {
     const previous = process.env.OPENCODE_DB;
+    const previousXdg = process.env.XDG_DATA_HOME;
     delete process.env.OPENCODE_DB;
+    delete process.env.XDG_DATA_HOME;
     try {
       const home = os.homedir();
-      const xdg = path.join(home, ".local", "share", "opencode");
-      assert.equal(defaultDbPath(), path.join(xdg, "opencode.db"));
+      assert.equal(
+        defaultDbPath(),
+        path.join(home, ".local", "share", "opencode", "opencode.db"),
+      );
+      const xdg = path.join(os.tmpdir(), "ocv-xdg-data");
+      process.env.XDG_DATA_HOME = xdg;
+      assert.equal(defaultDbPath(), path.join(xdg, "opencode", "opencode.db"));
       const custom = path.join(os.tmpdir(), "custom-opencode.db");
       process.env.OPENCODE_DB = custom;
       assert.equal(defaultDbPath(), custom);
     } finally {
       if (previous === undefined) delete process.env.OPENCODE_DB;
       else process.env.OPENCODE_DB = previous;
+      if (previousXdg === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = previousXdg;
     }
   });
 });

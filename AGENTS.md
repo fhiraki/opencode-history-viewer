@@ -21,7 +21,7 @@
 
 ## DB ルール（厳守）
 - 実 DB は必ず `new DatabaseSync(path, { readOnly: true })` で開く。書き込み・マイグレーション・VACUUM 禁止
-- 既定パス: `~/.local/share/opencode/opencode.db`
+- 既定パス: `$XDG_DATA_HOME/opencode/opencode.db`（未設定なら `~/.local/share/opencode/opencode.db`）。opencode 本体が XDG_DATA_HOME を優先するため揃えている（同梱バイナリで確認）。`OPENCODE_DB` が最優先
 - `event` テーブルは絶対に触らない（DB の大部分を占める。執筆時点で DB 約11GB）。`session` / `message` / `part` のみ使う
 - タイムスタンプは ms epoch。タイムラインの日別集計はサーバーローカル日付でバケット化（SQL 側で `date(...,'localtime')` 集計し、全行を JS に載せない）
 - `server.listen(PORT, "127.0.0.1")` とレスポンスの `SECURITY_HEADERS`（CSP 等）は維持する（履歴を LAN に出さない）。listen には `error` リスナを付け、EADDRINUSE は日本語で案内して `db.close()` 後に終了する（未処理のままだとスタックトレース付きで異常終了する）

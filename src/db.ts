@@ -3,10 +3,12 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 export function defaultDbPath() {
-  return (
-    process.env.OPENCODE_DB ||
-    path.join(os.homedir(), ".local", "share", "opencode", "opencode.db")
-  );
+  if (process.env.OPENCODE_DB) return process.env.OPENCODE_DB;
+  // opencode 本体は XDG_DATA_HOME を優先してデータを置く（同梱バイナリで確認済み）。
+  // 無視すると設定環境でのみ DB を見つけられず起動できない。未設定時は従来通り
+  const base =
+    process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share");
+  return path.join(base, "opencode", "opencode.db");
 }
 
 export function openDb(dbPath = defaultDbPath()): DatabaseSync {
