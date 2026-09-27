@@ -16,7 +16,6 @@ export function openDb(dbPath = defaultDbPath()): DatabaseSync {
 
 /** DB 行（全カラムは string | number | null 等）。詳細が必要な箇所で絞り込む */
 type Row = Record<string, unknown>;
-type JsonObj = Record<string, unknown>;
 
 interface ListSessionsOpts {
   limit?: number;
@@ -68,13 +67,22 @@ export function escapeLike(s: string): string {
 
 function parseJsonSafe<T>(s: unknown, fallback: T): T {
   try {
-    return JSON.parse(typeof s === "string" ? s : "") as T;
+    const v: unknown = JSON.parse(typeof s === "string" ? s : "");
+    // ルートが null / 非オブジェクト（"null" や "123"）は呼び出し側が
+    // raw.type を読んだ時点で TypeError になり detail 全体が 500 になるため
+    // パース失敗と同じく fallback へ寄せる（呼び出し側の fallback はオブジェクトか null）
+    if (v === null || typeof v !== "object") return fallback;
+    return v as T;
   } catch {
     return fallback;
   }
 }
 
 const MAX_TEXT = 8000;
+// patch の files cap。検索側の substr(json_extract(p.data,'$.files'),1,2000) と対応させる
+const MAX_FILES = 2000;
+// 空文字要素は合計に効かないため、数え上がり過ぎを防ぐ件数上限も持つ
+const MAX_FILES_COUNT = 200;
 
 function truncate(
   s: string,
@@ -82,6 +90,42 @@ function truncate(
 ): { text: string; truncated: boolean; fullLength?: number } {
   if (s.length <= max) return { text: s, truncated: false };
   return { text: s.slice(0, max), truncated: true, fullLength: s.length };
+}
+
+/** message.meta の tokens を従来の JSON.parse 結果と同じ形に戻す。
+ * json_extract はオブジェクトを JSON テキストで返すため、それだけ小さくパースする。
+ * パースできない素の文字列・数値は従来の `meta.tokens || null` と同じ truthy 判定 */
+function normalizeTokens(v: unknown): unknown {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== "string") return v || null;
+  const parsed = parseJsonSafe<unknown>(v, null);
+  if (parsed !== null && typeof parsed === "object") return parsed;
+  return v || null;
+}
+
+/** patch の files を検索側（substr(json_extract(p.data,'$.files'),1,2000)）と同じ量に
+ * 絞る。合計が MAX_FILES を超える要素は落とさず、残り予算ぶんだけ切り詰めた文字列を
+ * 入れて止める（substr と同じ「切断」の挙動。先頭1要素が巨大でも空配列にならず、
+ * 「検索ではヒットして詳細では何も出ない」食い違いを起こさないため）。
+ * 非文字列要素は JSON 表記の長さぶんの予算を超えると丸ごと入れられないため落とす。
+ * 新しいフィールドは足さない */
+function capFiles(files: unknown[]): unknown[] {
+  const out: unknown[] = [];
+  let total = 0;
+  for (const f of files) {
+    if (out.length >= MAX_FILES_COUNT) break;
+    // 文字列以外は JSON 表記の長さで数える（値自体はクライアントへそのまま渡す）
+    const text = typeof f === "string" ? f : JSON.stringify(f);
+    const len = text === undefined ? 0 : text.length;
+    if (total + len > MAX_FILES) {
+      const rest = MAX_FILES - total;
+      if (typeof f === "string" && rest > 0) out.push(f.slice(0, rest));
+      break;
+    }
+    total += len;
+    out.push(f);
+  }
+  return out;
 }
 
 export function listProjects(db: DatabaseSync): Row[] {
@@ -217,6 +261,72 @@ export function listSessions(
   return { total, sessions };
 }
 
+/** message.meta を json_extract で抜き出す高速経路。data カラムは SELECT しない。
+ * 返す列名は selectMessagesLegacy と一字一句揃えること（shape は toMessageMeta に畳む） */
+function selectMessagesFast(db: DatabaseSync, sessionId: string): Row[] {
+  // message.data の全文 JSON.parse は 24.4MB×4件を含むセッションで 381〜405ms の
+  // 同期停止になる（本文は返却していない）。実際に使う meta フィールドだけ
+  // json_extract で取り出し、巨大な本文を JS に持ち込まない（実測 61ms → 5.6倍差）。
+  // json_extract はオブジェクトを JSON テキストで返すため、tokens だけ後段で
+  // 小さくパースして従来の形に戻す。
+  return db
+    .prepare(
+      `SELECT id, session_id, time_created, time_updated,
+        json_extract(data, '$.role') AS role,
+        json_extract(data, '$.agent') AS agent,
+        json_extract(data, '$.modelID') AS model_id,
+        json_extract(data, '$.model.modelID') AS model_model_id,
+        json_extract(data, '$.tokens') AS tokens,
+        json_extract(data, '$.cost') AS cost,
+        json_extract(data, '$.finish') AS finish
+       FROM message
+       WHERE session_id = ? ORDER BY time_created ASC, id ASC`,
+    )
+    .all(sessionId);
+}
+
+/** message.data に不正な JSON が1行でも混ざると json_extract は「malformed JSON」で
+ * throw し、その1行が /api/session/:id 全体を 500 にしてしまう。そのときだけ data カラムを
+ * 丸ごと取り出して JS でパースする従来経路に切り替える（この経路だけ全文 JSON.parse の
+ * コストを許容する）。返す列名は selectMessagesFast と揃える。 */
+function selectMessagesLegacy(db: DatabaseSync, sessionId: string): Row[] {
+  const rows = db
+    .prepare(
+      `SELECT id, session_id, time_created, time_updated, data
+       FROM message
+       WHERE session_id = ? ORDER BY time_created ASC, id ASC`,
+    )
+    .all(sessionId);
+  return rows.map((m) => {
+    // 破損・"null"・"123" は parseJsonSafe の fallback（{}）へ寄せられるため throw しない
+    const meta = parseJsonSafe<Row>(m.data, {});
+    const model = meta.model;
+    return {
+      id: m.id,
+      session_id: m.session_id,
+      time_created: m.time_created,
+      time_updated: m.time_updated,
+      role: meta.role ?? null,
+      agent: meta.agent ?? null,
+      model_id: meta.modelID ?? null,
+      // model がオブジェクトのときだけ json_extract と同じく modelID を取り出す
+      model_model_id:
+        model !== null && typeof model === "object"
+          ? ((model as Row).modelID ?? null)
+          : null,
+      // json_extract がオブジェクトを JSON テキストで返すのと形を揃える。
+      // null/未設定を JSON.stringify すると "null" 文字列になり、truthy 判定で
+      // normalizeTokens をすり抜けるため null のまま渡す
+      tokens:
+        meta.tokens !== null && typeof meta.tokens === "object"
+          ? JSON.stringify(meta.tokens)
+          : (meta.tokens ?? null),
+      cost: meta.cost ?? null,
+      finish: meta.finish ?? null,
+    };
+  });
+}
+
 export function getSessionDetail(
   db: DatabaseSync,
   sessionId: string,
@@ -229,12 +339,15 @@ export function getSessionDetail(
     .get(sessionId);
   if (!session) return null;
 
-  const messages = db
-    .prepare(
-      `SELECT id, session_id, time_created, time_updated, data FROM message
-       WHERE session_id = ? ORDER BY time_created ASC, id ASC`,
-    )
-    .all(sessionId);
+  // 1行でも破損 data があると json_extract が throw して detail 全体が 500 になるため、
+  // そのときだけ従来の JS パース経路へフォールバックする（実 DB で malformed 0 件でも、
+  // public リポジトリなので他人の DB で発り得る）
+  let messages: Row[];
+  try {
+    messages = selectMessagesFast(db, sessionId);
+  } catch {
+    messages = selectMessagesLegacy(db, sessionId);
+  }
 
   const parts = db
     .prepare(
@@ -252,27 +365,30 @@ export function getSessionDetail(
     partsByMessage.get(key)?.push(norm);
   }
 
-  const normMessages = messages.map((m) => {
-    const meta = parseJsonSafe(m.data, {} as JsonObj);
-    const metaModel =
-      typeof meta.model === "object" && meta.model !== null
-        ? (meta.model as JsonObj)
-        : undefined;
-    return {
-      id: m.id,
-      role: meta.role || "unknown",
-      time_created: m.time_created,
-      time_updated: m.time_updated,
-      agent: meta.agent || null,
-      modelID: meta.modelID || metaModel?.modelID || null,
-      tokens: meta.tokens || null,
-      cost: meta.cost ?? null,
-      finish: meta.finish || null,
-      parts: partsByMessage.get(String(m.id)) || [],
-    };
-  });
+  const normMessages = messages.map((m) => toMessageMeta(m, partsByMessage));
 
   return { session, messages: normMessages };
+}
+
+/** selectMessagesFast / selectMessagesLegacy の両経路を従来の返却 shape に畳む。
+ * 返却フィールド（id / role / time_* / agent / modelID / tokens / cost / finish / parts）は
+ * 従来と一字一句変えないこと */
+function toMessageMeta(
+  m: Row,
+  partsByMessage: Map<string, Record<string, unknown>[]>,
+): Record<string, unknown> {
+  return {
+    id: m.id,
+    role: m.role || "unknown",
+    time_created: m.time_created,
+    time_updated: m.time_updated,
+    agent: m.agent || null,
+    modelID: m.model_id || m.model_model_id || null,
+    tokens: normalizeTokens(m.tokens),
+    cost: m.cost ?? null,
+    finish: m.finish || null,
+    parts: partsByMessage.get(String(m.id)) || [],
+  };
 }
 
 function normalizePart(row: Row, raw: PartRaw): Record<string, unknown> {
@@ -328,7 +444,8 @@ function normalizePart(row: Row, raw: PartRaw): Record<string, unknown> {
     base.outputTruncated = tOut.truncated || false;
     base.outputFullLength = tOut.fullLength || outputStr.length;
   } else if (raw.type === "patch") {
-    base.files = Array.isArray(raw.files) ? raw.files : [];
+    // files は詳細側も検索側と同じ 2000 文字 cap（実測 最大 63,742 バイト）
+    base.files = Array.isArray(raw.files) ? capFiles(raw.files) : [];
     base.hash = raw.hash || "";
   } else if (raw.type === "subtask") {
     // /review・/init 等のカスタムコマンド実行記録。prompt は指示文本文のため text と同じ caps。

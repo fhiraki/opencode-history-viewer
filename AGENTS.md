@@ -14,6 +14,7 @@
 - Node >= 24 必須（`node:sqlite` の `DatabaseSync` を使用）
 - `npm install` 必須。ランタイム依存はゼロ。新規ライブラリは devDependencies に追加し、esbuild（`scripts/esbuild.config.mjs` の client/server）でバンドルする。`dependencies` には入れない
 - `npm start`（`prestart` で自動ビルド）/ `npm run dev`（esbuild watch＋`node --watch`）/ `npm run build`
+- `scripts/build.mjs` は成果物の削除・解決を `import.meta.dirname` 基準（`absWorkingDir` で entryPoints/outdir も揃える）で行い、CWD に依存しない（CWD 相対だと別ディレクトリ実行でそのプロジェクトの `dist/` を消す）
 - `PORT`（既定 8083）、`OPENCODE_DB` で DB パス上書き可
 - README は英日2部構成。機能や API を変えたら両方の記述を更新する
 
@@ -22,8 +23,17 @@
 - 既定パス: `~/.local/share/opencode/opencode.db`
 - `event` テーブルは絶対に触らない（DB の大部分を占める。執筆時点で DB 約11GB）。`session` / `message` / `part` のみ使う
 - タイムスタンプは ms epoch。タイムラインの日別集計はサーバーローカル日付でバケット化（SQL 側で `date(...,'localtime')` 集計し、全行を JS に載せない）
-- `server.listen(PORT, "127.0.0.1")` とレスポンスの `SECURITY_HEADERS`（CSP 等）は維持する（履歴を LAN に出さない）
+- `server.listen(PORT, "127.0.0.1")` とレスポンスの `SECURITY_HEADERS`（CSP 等）は維持する（履歴を LAN に出さない）。listen には `error` リスナを付け、EADDRINUSE は日本語で案内して `db.close()` 後に終了する（未処理のままだとスタックトレース付きで異常終了する）
 - `node:sqlite` は同期 API。重いクエリはイベントループを止めて他リクエストも待たせるため、全走査・全行 `json_extract` を避け、prefix 絞り込み（下記）と索引を使う
+
+## HTTP（`src/handler.ts`）
+- `Host` がループバック（`127.0.0.1` / `localhost` / `[::1]`、ポート付き可）でなければ全ルート（API・静的・SPA フォールバック）で 403。DNS rebinding 対策。ルーティングの先頭に置く
+- メソッドは GET/HEAD のみ。それ以外は 405 + `Allow: GET, HEAD`。HEAD はステータス・ヘッダ・Content-Length を GET と同じにしてボディだけ捨てる
+- 拡張子付きの欠落パスは 404（SPA フォールバックしない＝ビルド漏れを無言で隠さない）。フォールバックは「stat で不在と確認した拡張子なしパス」だけ
+- stat 成功後の read 失敗（EACCES/EIO）は 500。index.html の 200 に化けさせない
+- プレーン応答（400/403/404/405/500）は `sendText` 経由にし、`Content-Type: text/plain; charset=utf-8` と `SECURITY_HEADERS` を必ず付ける
+- `//` 始まりのリクエストターゲットは `parseQuery` の前に 400（`new URL` がプロトコル相対 URL と解釈し pathname を取り違える）
+- 静的ファイルは realpath を publicDir 配下で再検証してから配信（`resolveStaticPath` の辞書上チェックだけでは symlink を通り抜けられる）
 
 ## SQLite の落とし穴
 - `node:sqlite` のバインドはスプレッドのみ: `.all(...params)`。配列渡し `.all(arr)` は `Unknown named parameter '0'` で失敗する
@@ -41,6 +51,8 @@
 - 巨大出力を返さない caps を維持する: 本文 8000・tool 入力 4000/出力 8000・**tool title 1000**・検索は `json_extract` 抜き出し＋`substr`（text 8000・input 4000・output/meta 8000・files 2000・title 1000）。1165発言セッションで約5MBになる
 - `/api/sessions` の `from`/`to` は `s.time_created` で絞る（`getTimeline` の日別バケットと同一基準。`time_updated` にすると日クリックの件数がバーチャートとずれる）
 - ただし **caps は表示・転送量の制限であり、検索の一致判定には掛からない**（text・tool input/output・title 共通の方針）。ヒット語が caps 外にある場合はスニペットはフィールド先頭を返す。片側だけ caps を掛けると判定と表示が食い違うので、方針を変えるなら全フィールドを揃えること
+- `getSessionDetail` は `message.data` を JS で全文 `JSON.parse` しない。SELECT 内の `json_extract` で role/agent/modelID/tokens/cost/finish を抜き、本文 `data` カラムは SELECT に含めない（巨大メッセージで 0.4 秒の同期停止 → 0.06 秒。実測）。`part.data` は引き続き `parseJsonSafe`（ルートが null・非オブジェクトなら fallback）。ただし `json_extract` は**不正な JSON で throw** するため、その場合だけ従来の `SELECT data` ＋ `parseJsonSafe` 経路に try/catch でフォールバックする（1行の破損で detail 全体が 500 にならないように）
+- `json_extract` は JSON の true/false を 1/0、object/array を JSON テキストとして返す。message meta では bool・object が来ない前提（実 DB 34,968 行で該当 0 件を確認済み）。厳密な型が必要になったら `json_type` で吸収する
 
 ## 検証（Biome + tsc + node:test）
 - `npm run check` が正（Biome＋`tsc --noEmit`＋`node --test test/*.test.ts`）。修正は `npm run format`

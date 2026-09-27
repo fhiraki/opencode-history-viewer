@@ -38,6 +38,26 @@ const server = http.createServer(
 
 // LAN 公開を避けるため loopback のみにバインドする（履歴 DB は機密情報を含みうる）
 const startedAt = new Date();
+// listen 失敗（ポート使用中等）は error イベントで届く。未処理のままだと
+// スタックトレース付きで異常終了するため、DB を閉じて案内してから終了する。
+// once にすることで listen 成功後の突発 error で db.close + exit が走り、
+// shutdown（close → db.close → exit）と競合しない
+server.once("error", (e: NodeJS.ErrnoException) => {
+  if (e.code === "EADDRINUSE") {
+    console.error(`[opencode-viewer] ポート ${PORT} は既に使用中です。`);
+    console.error(
+      `環境変数 PORT で別のポートを指定できます（例: PORT=8084 npm start）。`,
+    );
+  } else {
+    console.error(
+      `[opencode-viewer] サーバー起動失敗: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  try {
+    db.close();
+  } catch {}
+  process.exit(1);
+});
 server.listen(PORT, "127.0.0.1", () => {
   console.log(
     `[opencode-viewer] 開始: ${startedAt.toLocaleString("ja-JP")} (${startedAt.toISOString()})`,

@@ -313,6 +313,286 @@ describe("listSessions from/to", () => {
   });
 });
 
+describe("getSessionDetail message meta", () => {
+  type DetailMessage = {
+    id: string;
+    role: string;
+    time_created: number;
+    time_updated: number;
+    agent: unknown;
+    modelID: unknown;
+    tokens: unknown;
+    cost: unknown;
+    finish: unknown;
+    parts: { id: string; type: string }[];
+  };
+  it("keeps the message shape after moving meta extraction into SQL", () => {
+    const db = fixture();
+    try {
+      db.prepare(
+        `INSERT INTO session (id, project_id, directory, title, time_created, time_updated)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run("sMeta", "p1", "/tmp/x", "meta", 100, 100);
+      const msg = db.prepare(
+        `INSERT INTO message (id, session_id, time_created, time_updated, data)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      // role / agent / modelID / model.modelID / tokens / cost / finish の完全形
+      msg.run(
+        "mm1",
+        "sMeta",
+        1,
+        1,
+        JSON.stringify({
+          role: "assistant",
+          agent: "build",
+          modelID: "top-model",
+          model: { providerID: "prov", modelID: "nested-model" },
+          tokens: { input: 3, output: 2, reasoning: 1 },
+          cost: 0.125,
+          finish: "stop",
+        }),
+      );
+      // modelID が無い行は model.modelID にフォールバックし、無いキーは null
+      msg.run(
+        "mm2",
+        "sMeta",
+        2,
+        2,
+        JSON.stringify({
+          role: "user",
+          model: { providerID: "prov", modelID: "nested-only" },
+        }),
+      );
+      // 空文字 role・null tokens/cost・false finish は従来の truthy 判定どおり
+      msg.run(
+        "mm3",
+        "sMeta",
+        3,
+        3,
+        JSON.stringify({ role: "", tokens: null, cost: null, finish: false }),
+      );
+
+      const detail = getSessionDetail(db, "sMeta") as unknown as {
+        messages: DetailMessage[];
+      } | null;
+      assert.ok(detail);
+      assert.deepEqual(detail.messages[0], {
+        id: "mm1",
+        role: "assistant",
+        time_created: 1,
+        time_updated: 1,
+        agent: "build",
+        modelID: "top-model",
+        tokens: { input: 3, output: 2, reasoning: 1 },
+        cost: 0.125,
+        finish: "stop",
+        parts: [],
+      });
+      const m2 = detail.messages[1];
+      assert.equal(m2?.modelID, "nested-only");
+      assert.equal(m2?.agent, null);
+      assert.equal(m2?.tokens, null);
+      assert.equal(m2?.cost, null);
+      assert.equal(m2?.finish, null);
+      const m3 = detail.messages[2];
+      assert.equal(m3?.role, "unknown");
+      assert.equal(m3?.tokens, null);
+      assert.equal(m3?.cost, null);
+      assert.equal(m3?.finish, null);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('returns role: "unknown" / type: "unknown" for data: "null" instead of throwing', () => {
+    const db = fixture();
+    try {
+      db.prepare(
+        `INSERT INTO session (id, project_id, directory, title, time_created, time_updated)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run("sNull", "p1", "/tmp/x", "null data", 100, 100);
+      const msg = db.prepare(
+        `INSERT INTO message (id, session_id, time_created, time_updated, data)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      // JSON.parse の結果が null / 非オブジェクトでも TypeError にならず未知扱いになる
+      msg.run("mn1", "sNull", 1, 1, "null");
+      msg.run("mn2", "sNull", 2, 2, "123");
+      msg.run("mn3", "sNull", 3, 3, '"plainstring"');
+      const part = db.prepare(
+        `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+      part.run("pn1", "mn1", "sNull", 1, 1, "null");
+      part.run("pn2", "mn2", "sNull", 2, 2, "123");
+      part.run("pn3", "mn3", "sNull", 3, 3, '"plainstring"');
+
+      const detail = getSessionDetail(db, "sNull") as unknown as {
+        messages: DetailMessage[];
+      } | null;
+      assert.ok(detail);
+      assert.equal(detail.messages.length, 3);
+      for (const m of detail.messages) {
+        assert.equal(m.role, "unknown");
+        assert.equal(m.agent, null);
+        assert.equal(m.modelID, null);
+        assert.equal(m.tokens, null);
+        assert.equal(m.cost, null);
+        assert.equal(m.finish, null);
+        assert.equal(m.parts[0]?.type, "unknown");
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("falls back to JS parsing instead of failing the whole detail", () => {
+    const db = fixture();
+    try {
+      db.prepare(
+        `INSERT INTO session (id, project_id, directory, title, time_created, time_updated)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run("sBroken", "p1", "/tmp/x", "broken", 100, 100);
+      const msg = db.prepare(
+        `INSERT INTO message (id, session_id, time_created, time_updated, data)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      // 開いた直後に閉じ括弧を欠いた切り詰め文字列。json_extract は
+      // 「malformed JSON」で throw するため selectMessagesLegacy へ切り替わる
+      msg.run("mb1", "sBroken", 1, 1, `{"role":"assistant","modelID":"m`);
+      // 同じセッションの正常な行は従来どおり取れる（破損 1 行で全体が壊れない）
+      msg.run("mb2", "sBroken", 2, 2, `{"role":"user","cost":0.5}`);
+
+      const detail = getSessionDetail(db, "sBroken") as unknown as {
+        messages: DetailMessage[];
+      } | null;
+      assert.ok(detail);
+      assert.equal(detail.messages.length, 2);
+      const broken = detail.messages[0];
+      assert.equal(broken?.id, "mb1");
+      assert.equal(broken?.role, "unknown");
+      assert.equal(broken?.agent, null);
+      assert.equal(broken?.modelID, null);
+      assert.equal(broken?.tokens, null);
+      assert.equal(broken?.cost, null);
+      assert.equal(broken?.finish, null);
+      assert.deepEqual(broken?.parts, []);
+      const healthy = detail.messages[1];
+      assert.equal(healthy?.id, "mb2");
+      assert.equal(healthy?.role, "user");
+      assert.equal(healthy?.cost, 0.5);
+      assert.equal(healthy?.tokens, null);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("patch files caps", () => {
+  type PatchPart = { id: string; files?: unknown };
+  const insertPatch = (
+    db: ReturnType<typeof fixture>,
+    id: string,
+    files: unknown[],
+  ) => {
+    db.prepare(
+      `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      id,
+      "m4",
+      "s3",
+      40,
+      40,
+      JSON.stringify({ type: "patch", files, hash: "h" }),
+    );
+  };
+  it("caps the detail files at 2000 chars in total", () => {
+    const db = fixture();
+    try {
+      // 1 要素 300 文字 ×10（合計 3000 文字）。検索側は substr(...,1,2000) で cap 済み
+      const files = Array.from({ length: 10 }, (_, i) =>
+        `file-${i}-`.padEnd(300, "x"),
+      );
+      insertPatch(db, "pcap", files);
+
+      const detail = getSessionDetail(db, "s3") as unknown as {
+        messages: { parts: PatchPart[] }[];
+      } | null;
+      assert.ok(detail);
+      const part = detail.messages
+        .flatMap((m) => m.parts)
+        .find((p) => p.id === "pcap");
+      const got = (part?.files ?? []) as string[];
+      const total = got.reduce((n, f) => n + String(f).length, 0);
+      assert.ok(total <= 2000, `files total ${total} > 2000`);
+      // 先頭から残し、はみ出した要素は落とさず残り予算ぶんだけ切り詰める
+      // （6×300=1800 で残り 200 ぶんの 7 件目まで入る＝検索側 substr と同じ切断）
+      assert.equal(got.length, 7);
+      assert.equal(got[0], files[0]);
+      assert.equal(got[6], files[6].slice(0, 200));
+      assert.equal(total, 2000);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("truncates a single element that exceeds the cap to the budget", () => {
+    const db = fixture();
+    try {
+      insertPatch(db, "pcap1", ["y".repeat(3000)]);
+      const detail = getSessionDetail(db, "s3") as unknown as {
+        messages: { parts: PatchPart[] }[];
+      } | null;
+      assert.ok(detail);
+      const part = detail.messages
+        .flatMap((m) => m.parts)
+        .find((p) => p.id === "pcap1");
+      // 落として空配列にすると検索ではヒットして詳細では何も出ないため、
+      // 検索側の substr(...,1,2000) と同じ先頭 2000 文字を返す
+      assert.deepEqual(part?.files, ["y".repeat(2000)]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("drops a non-string element that exceeds the budget", () => {
+    const db = fixture();
+    try {
+      // 非文字列は JSON 表記の長さぶんしか入れられないため従来どおり落とす
+      insertPatch(db, "pcap4", [{ path: "z".repeat(3000) }]);
+      const detail = getSessionDetail(db, "s3") as unknown as {
+        messages: { parts: PatchPart[] }[];
+      } | null;
+      assert.ok(detail);
+      const part = detail.messages
+        .flatMap((m) => m.parts)
+        .find((p) => p.id === "pcap4");
+      assert.deepEqual(part?.files, []);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps files that fit the cap untouched", () => {
+    const db = fixture();
+    try {
+      insertPatch(db, "pcap2", ["src/a.ts", "src/b.ts"]);
+      const detail = getSessionDetail(db, "s3") as unknown as {
+        messages: { parts: PatchPart[] }[];
+      } | null;
+      assert.ok(detail);
+      const part = detail.messages
+        .flatMap((m) => m.parts)
+        .find((p) => p.id === "pcap2");
+      assert.deepEqual(part?.files, ["src/a.ts", "src/b.ts"]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe("getStats", () => {
   it("reports totals, per-project sessions and tool usage", () => {
     const db = fixture();

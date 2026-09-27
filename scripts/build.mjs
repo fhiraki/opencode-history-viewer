@@ -1,15 +1,22 @@
 // フロントバンドル (public/dist) とサーバー (dist) を esbuild で生成する。
 // 使い方: node scripts/build.mjs
 import { rmSync } from "node:fs";
+import path from "node:path";
 import * as esbuild from "esbuild";
 import { clientConfig, serverConfig } from "./esbuild.config.mjs";
 
-// stale 成果物を除去してからビルドする
-rmSync("dist", { recursive: true, force: true });
-rmSync("public/dist", { recursive: true, force: true });
+// CWD ではなくこのファイルの位置を基準にする（別ディレクトリから
+// `node /path/to/scripts/build.mjs` を実行しても、外のプロジェクトの成果物を消さない）
+const ROOT = path.join(import.meta.dirname, "..");
 
-const client = await esbuild.context(clientConfig);
-const server = await esbuild.context(serverConfig);
+// stale 成果物を除去してからビルドする
+rmSync(path.join(ROOT, "dist"), { recursive: true, force: true });
+rmSync(path.join(ROOT, "public", "dist"), { recursive: true, force: true });
+
+// entryPoints / outdir は esbuild.config.mjs で相対パスのままなので、
+// 同じ ROOT 基準で解決するため absWorkingDir を渡す
+const client = await esbuild.context({ ...clientConfig, absWorkingDir: ROOT });
+const server = await esbuild.context({ ...serverConfig, absWorkingDir: ROOT });
 
 await client.rebuild();
 await server.rebuild();

@@ -72,12 +72,17 @@ If the DB file is missing, the server exits with an error and tells you to set `
 | `GET`  | `/api/timeline?project=`                                      | Daily aggregates                         |
 | `GET`  | `/api/stats`                                                  | Global stats                             |
 
-Static files are served from `public/` with an SPA fallback to `index.html`.
+Static files are served from `public/` under this delivery policy:
+
+- A missing path **with** an extension returns `404` and is never SPA-fallbacked, so a forgotten build step (`/dist/app.js`) is not hidden behind a `200`. Only a missing path **without** an extension falls back to `index.html` (SPA routing).
+- Only `GET` and `HEAD` are accepted; any other method returns `405` with `Allow: GET, HEAD`. `HEAD` answers with the same status and headers as `GET`, without a body.
+- A file that exists but fails to read (permissions, I/O) returns `500` — it is never silently replaced by `index.html`.
+- A request path whose real location (`realpath`) lands outside `public/` — e.g. through a symlink — returns `403`, including the `index.html` the SPA fallback serves.
 
 ### Safety & Privacy Notes
 
 - The DB is opened with `new DatabaseSync(path, { readOnly: true })`. No writes, migrations, or `VACUUM` are ever performed.
-- The server listens on `127.0.0.1` only.
+- The server listens on `127.0.0.1` only, and every request must carry a loopback `Host` header. A non-loopback `Host` — or no `Host` at all, as sent by HTTP/1.0 — is rejected with `403` on every route (DNS rebinding protection, so the check fails closed).
 - Timestamps in the DB are millisecond epoch; daily buckets are computed in server-local time.
 - Very large tool outputs are truncated in both API responses and the UI to keep huge sessions renderable.
 
@@ -178,12 +183,17 @@ DB ファイルが存在しない場合、サーバーはエラーを表示し�
 | `GET`    | `/api/timeline?project=`                                      | 日別集計                          |
 | `GET`    | `/api/stats`                                                  | 全体統計                          |
 
-静的ファイルは `public/` から配信し、該当なしのパスは SPA フォールバックとして `index.html` を返します。
+静的ファイルは `public/` から次の配信ポリシーで配信します。
+
+- 拡張子**付き**の存在しないパスは `404` を返し、SPA フォールバックしません（`/dist/app.js` のビルド漏れを `200` で無言に隠さないため）。拡張子**なし**の未存在パスだけ `index.html` にフォールバックします（SPA ルーティング）。
+- 受け付けるメソッドは `GET` / `HEAD` のみで、それ以外は `Allow: GET, HEAD` 付きの `405` を返します。`HEAD` は `GET` と同じステータス・ヘッダでボディだけを捨てます。
+- 存在が確認できたファイルの read が失敗した場合（権限・I/O エラー）は `500` を返します（`index.html` の `200` に無言で化けません）。
+- 実体（`realpath`）が `public/` の外を指す要求パス（symlink 経由等）は `403` を返します。SPA フォールバックが返す `index.html` も同じ検証に通します。
 
 ### 安全・プライバシーに関する注意
 
 - DB は `new DatabaseSync(path, { readOnly: true })` で開きます。書き込み・マイグレーション・`VACUUM` は一切行いません
-- サーバーは `127.0.0.1` のみにバインドします
+- サーバーは `127.0.0.1` のみにバインドします。あわせて全ルートで `Host` ヘッダがループバックであることを要求し、ループバックでない `Host`（および `Host` を持たない HTTP/1.0 の要求）は `403` で拒否します（DNS rebinding 対策。判定は fail-closed）
 - DB 内のタイムスタンプはミリ秒 epoch で、日別集計はサーバーのローカル日付でバケット化します
 - 巨大なツール出力は API・UI ともに先頭部分のみ返すよう切り詰めます（巨大セッションでも描画できるようにするため）
 
