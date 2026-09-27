@@ -125,12 +125,14 @@ export function listSessions(
     where.push(`s.project_id = ?`);
     params.push(project);
   }
+  // タイムラインの日別集計（getTimeline）は time_created でバケットしているため、
+  // 日クリックの from/to を time_updated で絞ると日付と件数がずれる。created 統一する。
   if (from) {
-    where.push(`s.time_updated >= ?`);
+    where.push(`s.time_created >= ?`);
     params.push(Number(from));
   }
   if (to) {
-    where.push(`s.time_updated <= ?`);
+    where.push(`s.time_created <= ?`);
     params.push(Number(to));
   }
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
@@ -317,7 +319,8 @@ function normalizePart(row: Row, raw: PartRaw): Record<string, unknown> {
     const tIn = truncate(inputStr, 4000);
     const tOut = truncate(outputStr || "", 8000);
     base.tool = raw.tool || "";
-    base.title = raw.title || st.title || "";
+    // title は実 DB で 26,065 文字まで観測されているため caps（他 caps と同じく 1000）
+    base.title = truncate(String(raw.title || st.title || ""), 1000).text;
     base.status = st.status || "";
     base.input = tIn.text;
     base.inputTruncated = tIn.truncated || false;
@@ -405,7 +408,7 @@ export function searchParts(
       picked.total AS total,
       json_extract(p.data, '$.type') AS ptype,
       json_extract(p.data, '$.tool') AS ptool,
-      COALESCE(json_extract(p.data, '$.title'), json_extract(p.data, '$.state.title')) AS ptitle,
+      substr(COALESCE(NULLIF(json_extract(p.data, '$.title'), ''), json_extract(p.data, '$.state.title')), 1, 1000) AS ptitle,
       json_extract(m.data, '$.role') AS mrole,
       substr(json_extract(p.data, '$.text'), 1, 8000) AS t_text,
       substr(json_extract(p.data, '$.state.input'), 1, 4000) AS t_input,

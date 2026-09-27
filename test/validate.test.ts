@@ -22,6 +22,10 @@ describe("parsePort", () => {
     assert.equal(parsePort("3000"), 3000);
     assert.equal(parsePort("3000.9"), 3000);
   });
+  it("accepts the upper boundary and rejects one past it", () => {
+    assert.equal(parsePort("65535"), 65535);
+    assert.equal(parsePort("65536"), 8083);
+  });
 });
 
 describe("clampInt", () => {
@@ -39,6 +43,12 @@ describe("clampInt", () => {
     assert.equal(clampInt("-5", 50, 200, 1), 1);
     assert.equal(clampInt("10", 50, 200, 1), 10);
   });
+  it("treats blank input as the default, not the minimum", () => {
+    // "?limit=" のような空文字列は Number("") === 0 になり下限1へ落ちていた
+    assert.equal(clampInt("", 50, 200, 1), 50);
+    assert.equal(clampInt("   ", 50, 200, 1), 50);
+    assert.equal(clampInt(" 10 ", 50, 200, 1), 10);
+  });
 });
 
 describe("clampMs", () => {
@@ -46,6 +56,11 @@ describe("clampMs", () => {
     assert.equal(clampMs("abc"), 0);
     assert.equal(clampMs("-1"), 0);
     assert.equal(clampMs(null), 0);
+  });
+  it("treats blank input as unspecified", () => {
+    assert.equal(clampMs(""), 0);
+    assert.equal(clampMs("   "), 0);
+    assert.equal(clampMs(" 123 "), 123);
   });
   it("floors valid epochs", () => {
     assert.equal(clampMs("123.9"), 123);
@@ -55,6 +70,9 @@ describe("clampMs", () => {
 describe("isValidId", () => {
   it("accepts alphanumerics, dash and underscore", () => {
     assert.equal(isValidId("ses_abc-123"), true);
+  });
+  it("accepts an id of exactly 128 characters", () => {
+    assert.equal(isValidId("a".repeat(128)), true);
   });
   it("rejects empty, oversized and hostile input", () => {
     assert.equal(isValidId(""), false);

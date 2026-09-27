@@ -38,7 +38,9 @@
 - `message.data` の role は先頭付近（実測 最長 46B）。`substr(data,1,512) LIKE '%"role":"assistant"%'` で絞ってから `MATERIALIZED` CTE 内で `json_extract` 集計する（perModel は 0.5〜0.8 秒 → 0.2 秒）
 - 検索は `COUNT(*) OVER ()` を取得 CTE に同居させ、全走査を1回にする（従来は COUNT と取得で2回）。offset 超過で 0 件のときだけ数え直して total を保証する
 - 一覧プレビューは `substr(p.data,1,14) = '{"type":"text"'` を先頭に置き、tool 出力の JSON パースを避ける（実測 2.3 倍）
-- 巨大出力を返さない caps を維持する: 本文 8000・tool 入力 4000/出力 8000・検索は `json_extract` 抜き出し＋`substr`（text 8000・input 4000・output/meta 8000・files 2000）。1165発言セッションで約5MBになる
+- 巨大出力を返さない caps を維持する: 本文 8000・tool 入力 4000/出力 8000・**tool title 1000**・検索は `json_extract` 抜き出し＋`substr`（text 8000・input 4000・output/meta 8000・files 2000・title 1000）。1165発言セッションで約5MBになる
+- `/api/sessions` の `from`/`to` は `s.time_created` で絞る（`getTimeline` の日別バケットと同一基準。`time_updated` にすると日クリックの件数がバーチャートとずれる）
+- ただし **caps は表示・転送量の制限であり、検索の一致判定には掛からない**（text・tool input/output・title 共通の方針）。ヒット語が caps 外にある場合はスニペットはフィールド先頭を返す。片側だけ caps を掛けると判定と表示が食い違うので、方針を変えるなら全フィールドを揃えること
 
 ## 検証（Biome + tsc + node:test）
 - `npm run check` が正（Biome＋`tsc --noEmit`＋`node --test test/*.test.ts`）。修正は `npm run format`
@@ -59,6 +61,8 @@
 
 ## UI（`public/`）
 - UI 文言は英語に統一（DB 由来のセッション内容を除く）。数値表示はコンパクト表記（`fmtCount`: k/M/B）。正確値は `title` 属性に `fmtExact`（`en-US` 3 桁区切り）で保持する
+- `message.data` の `tokens` の実形状は `{input, output, reasoning, cache:{read,write}}`（**`total` キーは無い**）。ヘッダのトークン表示は `shared/format.ts` の `tokensTotal`（input+output+reasoning の合計、`total` は旧形式フォールバック）を使い、0 のときは表示しない
+- タイムラインの日別絞り込み中（`state.timelineDay`）は一覧要求を `sort=created` にし、行の日付表示も `time_created` を使う（フィルタ基準と並び・表示を揃えないと「9/20 の一覧の先頭が別日の日付」に見える）
 - セッション詳細の構造は `.turn`（1往復）＞ `.msg` ＞ 回答カード（`.part.answer`）＋作業ログ（`details.worklog`）。回答なし assistant は `<details class="msg work-only">`（msg-head 一体型 summary）。`.msg` はやり取りナビ（`buildNav`＋`resolveNavIndex`）のアンカーなので剥がさない。構造変更時はスクロール同期（`toggle`・`resize` での再同期）を確認する
 - シンタックスハイライトは highlight.js（必要言語のみ `highlight.ts` で登録＋esbuild バンドル）。Markdown 描画は marked（GFM）＋自前の安全化（生 HTML 無効化・URL スキーム制限＋相対 URL のリンク化拒否・コード描画は `highlightTokens`）。外部 CDN は CSP（`default-src 'self'`）で遮断されるため使えない
 - タブのスライド式インジケーターは JS で位置計算（`moveTabIndicator`）＋ CSS transition。`resize` と `document.fonts.ready` でも再計算する

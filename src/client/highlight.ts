@@ -169,10 +169,26 @@ export function normalizeLang(info: string, code: string): string {
       // JSON ではないので次の判定へ
     }
   }
-  const pmLines = trimmed
-    .split("\n")
-    .filter((l) => /^[+-]/.test(l) && !/^(?:\+\+\+|---)/.test(l));
-  if (/^(?:@@ |diff |--- |\+\+\+ )/m.test(trimmed) || pmLines.length >= 2) {
+  // diff の自動判定。"`[+-]` で始まる行が2つ"だけでは箇条書き風コード
+  // （- alpha / - beta）や水平線（---）まで diff として緑赤に塗られてしまうため、
+  // diff 固有の構造を条件にする。以下いずれかを満たせば diff:
+  //   (1) unified diff のハンクヘッダ `@@ -l,s +l,s @@`（combined diff の @@@ も）
+  //   (2) git のファイルヘッダ行 `diff `（`diff --git a/x b/x` 等）
+  //   (3) git の blob ハッシュ行 `index abcdef1..1234567`（4桁以上の小文字16進。
+  //       `index 0..10` のような配列インデックス表記や `INDEX ..` の表記は拾わない）
+  //   (4) `--- <path>` と `+++ <path>` の対（ファイル名必須。
+  //       それ単独の水平線 `---` や front matter は拾わない）
+  // さらに (1)〜(4) が無い文脈でも、`+` 始まりと `-` 始まりの変更行が両方存在する
+  // ときだけ diff とみなす（`- a` / `- b` のような同符号の箇条書きは該当しない）。
+  const lines = trimmed.split("\n");
+  const hasLine = (re: RegExp): boolean => lines.some((l) => re.test(l));
+  const isDiff =
+    hasLine(/^@{2,3} -\d+(?:,\d+)? /) ||
+    hasLine(/^diff /) ||
+    hasLine(/^index [0-9a-f]{4,}\.\.[0-9a-f]{4,}(?:\s|$)/) ||
+    (hasLine(/^--- \S/) && hasLine(/^\+\+\+ \S/)) ||
+    (hasLine(/^\+[^+]/) && hasLine(/^-[^-]/));
+  if (isDiff) {
     return "diff";
   }
   return "plaintext";

@@ -11,6 +11,7 @@ import {
   modelText,
   prettyJson,
   shortenHome,
+  tokensTotal,
 } from "../shared/format.ts";
 import { resolveNavIndex } from "../shared/nav.ts";
 import {
@@ -137,7 +138,14 @@ interface ApiMessage {
   id: string;
   role: string;
   time_created: number;
-  tokens?: { total?: number } | null;
+  // message.data の tokens 実形状（total キーは実データに無い。旧形式フォールバックのみ）
+  tokens?: {
+    input?: number;
+    output?: number;
+    reasoning?: number;
+    cache?: { read?: number; write?: number };
+    total?: number;
+  } | null;
   parts: ApiPart[];
 }
 interface SessionDetail {
@@ -253,6 +261,9 @@ async function loadSessions() {
     const end = new Date(`${state.timelineDay}T23:59:59.999`).getTime();
     params.set("from", String(start));
     params.set("to", String(end));
+    // from/to は time_created 基準（getTimeline のバケットと同じ）。フィルタ基準と
+    // 並び・表示を揃えないと「9/20 で絞った一覧の先頭が別日の日付」に見えるため created 固定。
+    params.set("sort", "created");
   }
   let data: { sessions: SessionItem[]; total: number; home?: string };
   try {
@@ -295,7 +306,7 @@ function renderSessionList() {
     b.innerHTML = `
       <span class="msg-badge" title="${fmtExact(s.messageCount)} messages"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3.5h11v6.5H8.2L5 12.5v-2.5H2.5z" /></svg>${fmtCount(s.messageCount)}</span>
       <div class="title">${esc(s.title || "(Untitled)")}</div>
-      <div class="meta">${esc(shortenHome(s.directory || "", state.home))} · ${fmtTime(s.time_updated)}</div>
+      <div class="meta">${esc(shortenHome(s.directory || "", state.home))} · ${fmtTime(state.timelineDay ? s.time_created : s.time_updated)}</div>
       ${s.preview ? `<div class="preview">${esc(s.preview.slice(0, 160))}</div>` : ""}`;
     b.addEventListener("click", () => selectSession(s.id));
     el.appendChild(b);
@@ -488,10 +499,12 @@ function renderTurns(messages: ApiMessage[], terms: string[]): string {
     .join("");
 }
 
+// message.data.tokens は {input, output, reasoning, cache} 形状で total キーは無い。
 function msgHeadInner(m: ApiMessage): string {
+  const tokTotal = tokensTotal(m.tokens);
   return `<span class="role ${esc(m.role)}">${esc(m.role)}</span>
       <span class="time">${fmtTime(m.time_created)}</span>
-      ${m.tokens ? `<span class="time">tok ${m.tokens.total == null ? "" : Number(m.tokens.total).toLocaleString("en-US")}</span>` : ""}`;
+      ${tokTotal > 0 ? `<span class="time">tok ${tokTotal.toLocaleString("en-US")}</span>` : ""}`;
 }
 
 function renderMessage(m: ApiMessage, terms: string[]): string {
@@ -664,6 +677,16 @@ $("reloadBtn").addEventListener("click", async () => {
     if (sel.value !== state.project) state.project = "";
     state.offset = 0;
     await loadSessions();
+  } catch (e) {
+    // 失敗の主因は loadProjects（loadSessions は内部で catch する）。ここで握らないと
+    // unhandled rejection として黙殺され、ユーザーには何も表示されない（初期化時表示と対称化）
+    $("sessionList").innerHTML = `<p>Failed to reload: ${esc(
+      e instanceof Error ? e.message : String(e),
+    )}</p>`;
+    $("sessionCount").textContent = "";
+    $("pageInfo").textContent = "";
+    $button("prevPage").disabled = true;
+    $button("nextPage").disabled = true;
   } finally {
     btn.disabled = false;
   }

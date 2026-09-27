@@ -137,3 +137,31 @@ export function shortenHome(dir: string, home: string): string {
   if (dir === home) return "~";
   return dir.startsWith(`${home}/`) ? `~${dir.slice(home.length)}` : dir;
 }
+
+/**
+ * message.data の tokens（実形状 {input, output, reasoning, cache}。`total` は
+ * 実データに存在しないが旧形式フォールバックとして認める）の合計を返す。
+ * 計算できない／合計 0 なら 0（呼び出し側は表示を出さない）。
+ */
+export function tokensTotal(
+  t:
+    | {
+        input?: number;
+        output?: number;
+        reasoning?: number;
+        cache?: { read?: number; write?: number };
+        total?: number;
+      }
+    | null
+    | undefined,
+): number {
+  if (!t) return 0;
+  const parts = [t.input, t.output, t.reasoning].map((v) => Number(v));
+  const sum = parts.reduce(
+    (acc, n) => acc + (Number.isFinite(n) && n > 0 ? n : 0),
+    0,
+  );
+  if (sum > 0) return sum;
+  const total = Number(t.total);
+  return Number.isFinite(total) && total > 0 ? total : 0;
+}

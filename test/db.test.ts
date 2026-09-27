@@ -81,6 +81,57 @@ describe("getSessionDetail caps", () => {
   });
 });
 
+describe("tool title caps", () => {
+  it("caps the detail title and the search title at 1000 chars", () => {
+    const db = fixture();
+    try {
+      // 実 DB で観測された巨大 state.title（26,065 文字）を模して 3000 文字を INSERT
+      const longTitle = `titlecapstart ${"x".repeat(3000)}`;
+      db.prepare(
+        `INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(
+        "tcap",
+        "m4",
+        "s3",
+        90,
+        90,
+        JSON.stringify({
+          type: "tool",
+          tool: "read",
+          state: {
+            title: longTitle,
+            input: { filePath: "/a.ts" },
+            output: "ok",
+          },
+        }),
+      );
+
+      const detail = getSessionDetail(db, "s3") as unknown as {
+        messages: { parts: { id: string; title?: unknown }[] }[];
+      } | null;
+      assert.ok(detail);
+      const capPart = detail.messages
+        .flatMap((m) => m.parts)
+        .find((p) => p.id === "tcap");
+      assert.ok(capPart);
+      const title = typeof capPart.title === "string" ? capPart.title : "";
+      assert.equal(title.length, 1000);
+
+      // 先頭付近の語で検索しないとスニペット源（caps 済み title）から消える
+      const { total, hits } = searchParts(db, { q: "titlecapstart" });
+      assert.equal(total, 1);
+      const hit = hits.find((h) => String(h.part_id) === "tcap");
+      assert.ok(hit);
+      const hitTitle = typeof hit.title === "string" ? hit.title : "";
+      assert.equal(hitTitle.length, 1000);
+      assert.match(String(hit.snippet), /titlecapstart/);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe("searchParts snippet", () => {
   it("finds term matches with a positioned snippet", () => {
     const db = fixture();
@@ -166,6 +217,96 @@ describe("getTimeline", () => {
         "second",
         "third",
       ]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("listSessions from/to", () => {
+  it("filters on time_created so it matches getTimeline's day buckets", () => {
+    const db = fixture();
+    try {
+      // time_created=日X・time_updated=日Y（X≠Y）のセッション
+      const dayX = new Date(2026, 8, 18, 12, 0);
+      const dayY = new Date(2026, 8, 25, 12, 0);
+      db.prepare(
+        `INSERT INTO session (id, project_id, directory, title, time_created, time_updated)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run("sDrift", "p1", "/tmp/x", "drift", dayX.getTime(), dayY.getTime());
+      const dayStr = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+          d.getDate(),
+        ).padStart(2, "0")}`;
+
+      // タイムラインは time_created でバケットするため日 X に計上され、日 Y には出ない
+      const days = getTimeline(db);
+      const entryX = days.find((d) => d.titles.includes("drift"));
+      assert.ok(entryX);
+      assert.equal(entryX.date, dayStr(dayX));
+      assert.equal(entryX.sessions, 1);
+      assert.equal(
+        days.some((d) => d.date === dayStr(dayY)),
+        false,
+      );
+
+      // 日クリックと同じ 00:00〜23:59:59.999 の範囲（タイムラインの日 X と一致すること）
+      const rangeOf = (d: Date) => {
+        const start = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        const end = new Date(
+          d.getFullYear(),
+          d.getMonth(),
+          d.getDate() + 1,
+          -1,
+        );
+        return { from: start.getTime(), to: end.getTime() };
+      };
+      const inX = listSessions(db, rangeOf(dayX));
+      assert.equal(inX.total, 1);
+      assert.equal(String(inX.sessions[0]?.id), "sDrift");
+      const inY = listSessions(db, rangeOf(dayY));
+      assert.equal(inY.total, 0);
+      assert.equal(inY.sessions.length, 0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps the day range on time_created for any sort and orders by created when asked", () => {
+    const db = fixture();
+    try {
+      const dayX = new Date(2026, 8, 18, 12, 0);
+      const dayY = new Date(2026, 8, 25, 12, 0);
+      const start = new Date(2026, 8, 18).getTime();
+      const to = new Date(2026, 8, 18, 23, 59, 59, 999).getTime();
+      const ins = db.prepare(
+        `INSERT INTO session (id, project_id, directory, title, time_created, time_updated)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+      // 同一日（日X）に作成され、更新日が異なる2件。updated 順と created 順が逆転する
+      ins.run("sA", "p1", "/tmp/x", "a", dayX.getTime(), dayY.getTime());
+      ins.run(
+        "sB",
+        "p1",
+        "/tmp/x",
+        "b",
+        new Date(2026, 8, 18, 18, 0).getTime(),
+        new Date(2026, 8, 18, 13, 0).getTime(),
+      );
+
+      // クライアントはタイムライン日別絞り込み中に sort=created を送る（フィルタ基準と揃える）
+      const byCreated = listSessions(db, { from: start, to, sort: "created" });
+      assert.deepEqual(
+        byCreated.sessions.map((s) => String(s.id)),
+        ["sB", "sA"],
+      );
+      // sort を created に変えても絞り込み対象は変わらない（from/to は常に time_created）
+      const byUpdated = listSessions(db, { from: start, to, sort: "updated" });
+      assert.deepEqual(
+        byUpdated.sessions.map((s) => String(s.id)),
+        ["sA", "sB"],
+      );
+      assert.equal(byUpdated.total, 2);
     } finally {
       db.close();
     }

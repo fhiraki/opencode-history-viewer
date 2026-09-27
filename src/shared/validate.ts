@@ -9,21 +9,31 @@ export function parsePort(raw: string | undefined, fallback = 8083): number {
   return Math.floor(n);
 }
 
-/** クエリ数値を [min, max] の有限整数に正規化する（NaN・Infinity を排除） */
+/**
+ * クエリ数値を [min, max] の有限整数に正規化する（NaN・Infinity を排除）。
+ * `raw` が null または trim して空文字列（例: `?limit=`）なら下限ではなく
+ * 既定値 `def` を返す。空白を含む数値（例: `" 10 "`）は trim して評価する。
+ */
 export function clampInt(
   raw: string | null,
   def: number,
   max: number,
   min = 0,
 ): number {
-  const n = Number(raw ?? def);
+  const s = (raw ?? "").trim();
+  const n = s === "" ? def : Number(s);
   if (!Number.isFinite(n)) return def;
   return Math.min(Math.max(Math.floor(n), min), max);
 }
 
-/** ms epoch を有限の非負整数に正規化する（不正値は 0 = 無指定扱い） */
+/**
+ * ms epoch を有限の非負整数に正規化する（不正値は 0 = 無指定扱い）。
+ * `raw` が null または trim して空文字列（例: `?from=`）も 0 = 未指定として扱う。
+ * これは従来からの挙動（`Number("")` が 0 を返す）の明記であり、挙動変更は無い。
+ */
 export function clampMs(raw: string | null): number {
-  const n = Number(raw ?? 0);
+  const s = (raw ?? "").trim();
+  const n = s === "" ? 0 : Number(s);
   if (!Number.isFinite(n) || n < 0) return 0;
   return Math.floor(n);
 }

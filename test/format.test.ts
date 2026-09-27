@@ -14,6 +14,7 @@ import {
   parseModel,
   prettyJson,
   shortenHome,
+  tokensTotal,
 } from "../src/shared/format.ts";
 
 describe("fmtTime", () => {
@@ -133,5 +134,33 @@ describe("shortenHome", () => {
     assert.equal(shortenHome(`${home}2/x`, home), `${home}2/x`);
     assert.equal(shortenHome("", home), "");
     assert.equal(shortenHome("/a/b", ""), "/a/b");
+  });
+});
+
+describe("tokensTotal", () => {
+  it("sums input, output and reasoning and ignores cache", () => {
+    assert.equal(
+      tokensTotal({
+        input: 100,
+        output: 20,
+        reasoning: 5,
+        cache: { read: 999 },
+      }),
+      125,
+    );
+  });
+  it("returns 0 when there is nothing to show so the label stays hidden", () => {
+    // 合計 0 のときは呼び出し側が出力を出さない（数字なしの "tok" を消すため）
+    assert.equal(tokensTotal(null), 0);
+    assert.equal(tokensTotal(undefined), 0);
+    assert.equal(tokensTotal({}), 0);
+    assert.equal(tokensTotal({ input: 0, output: 0, reasoning: 0 }), 0);
+    assert.equal(tokensTotal({ input: -5, output: Number.NaN }), 0);
+  });
+  it("falls back to total only when no component is present", () => {
+    // total は実 DB に存在しない旧形式。コンポーネントが有る場合はそちらを優先する
+    assert.equal(tokensTotal({ total: 42 }), 42);
+    assert.equal(tokensTotal({ input: 1, total: 42 }), 1);
+    assert.equal(tokensTotal({ total: Number.POSITIVE_INFINITY }), 0);
   });
 });

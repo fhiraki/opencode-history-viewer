@@ -9,6 +9,7 @@ import {
   renderProse,
   toolOutputLang,
 } from "../src/client/highlight.ts";
+import { esc } from "../src/shared/format.ts";
 
 describe("normalizeLang", () => {
   it("resolves aliases and known languages", () => {
@@ -23,6 +24,43 @@ describe("normalizeLang", () => {
     assert.equal(normalizeLang("", '{"a": 1}'), "json");
     assert.equal(normalizeLang("", "+ added\n- removed"), "diff");
     assert.equal(normalizeLang("", "just text"), "plaintext");
+  });
+  it("does not mistake bullet lists or rules for diff", () => {
+    // 同符号の `- ` 行が2つあるだけでは diff にしない（旧実装の誤判定）
+    assert.equal(normalizeLang("", "- alpha\n- beta"), "plaintext");
+    assert.equal(normalizeLang("", "- [ ] todo\n- [x] done"), "plaintext");
+    // 水平線・front matter 系の `---` 単独も diff にしない
+    assert.equal(normalizeLang("", "---\nbody\n---"), "plaintext");
+    assert.equal(normalizeLang("", "intro\n\n---\n\noutro"), "plaintext");
+    // 旧実装は `--- ` 行（`--- ` で終わる水平線/front matter）1本で diff にしていた
+    assert.equal(normalizeLang("", "intro\n\n--- draft\n\noutro"), "plaintext");
+    // 配列インデックス表記と大文字の index 行は git の blob ハッシュ行ではない
+    assert.equal(normalizeLang("", "index 0..10"), "plaintext");
+    assert.equal(normalizeLang("", "INDEX ABCDEF..1234567"), "plaintext");
+  });
+  it("detects real diffs by structure", () => {
+    // unified diff のハンクヘッダ
+    assert.equal(
+      normalizeLang("", "@@ -1,3 +1,3 @@\n ctx\n-old\n+new\n"),
+      "diff",
+    );
+    // `--- a/...` と `+++ b/...` の対＋ハンク
+    assert.equal(
+      normalizeLang(
+        "",
+        "--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-a\n+b\n",
+      ),
+      "diff",
+    );
+    // git のファイルヘッダ行と index 行
+    assert.equal(
+      normalizeLang(
+        "",
+        "diff --git a/x.ts b/x.ts\nindex 1234567..89abcde 100644\n",
+      ),
+      "diff",
+    );
+    assert.equal(normalizeLang("", "index abcdef1..1234567\n"), "diff");
   });
 });
 
@@ -40,7 +78,27 @@ describe("highlightTokens", () => {
     assert.doesNotThrow(() =>
       highlightTokens("`unterminated ${x", "javascript"),
     );
-    assert.doesNotThrow(() => highlightTokens("a".repeat(20000), "python"));
+  });
+  it("returns escaped plain text once over the size guard", () => {
+    // 実装のガードは `raw.length > 20000`（highlight.ts）。
+    // ちょうど 20000 字では発動しないため、必ず超過する長さにする
+    const raw = `<b>${"a".repeat(20001)}`;
+    assert.equal(raw.length, 20004);
+    // ガード発動時は esc 済みのまま返ることを値で検証する（doesNotThrow だけでは不可）
+    assert.equal(
+      highlightTokens(raw, "python"),
+      `&lt;b&gt;${"a".repeat(20001)}`,
+    );
+    assert.equal(highlightTokens(raw, "python").includes("hljs-"), false);
+    // 逆方向の検証: 本来ハイライトされる python を巨大化したもの。
+    // ガードが効いていなければ hljs-keyword 等の span が付くため、
+    // esc 済みと完全一致すること＝ガードが発動したことを意味する
+    const py = "def f(x):\n  return x < 100\n";
+    assert.match(highlightTokens(py, "python"), /hljs-/);
+    const padded = py + "a".repeat(20000);
+    assert.ok(padded.length > 20000);
+    assert.equal(highlightTokens(padded, "python"), esc(padded));
+    assert.equal(highlightTokens(padded, "python").includes("hljs-"), false);
   });
 });
 
@@ -87,6 +145,14 @@ describe("renderProse", () => {
       renderProse("use `fmtCount` here", []).includes('class="ic"'),
       true,
     );
+  });
+  it("colors real diffs but leaves bullet lists plain", () => {
+    // 言語タグなし fence は normalizeLang の自動判定に依存する
+    const bullets = renderProse("```\n- alpha\n- beta\n```", []);
+    assert.equal(bullets.includes("hljs-addition"), false);
+    assert.equal(bullets.includes("hljs-deletion"), false);
+    const diff = renderProse("```diff\n-old\n+new\n```", []);
+    assert.match(diff, /hljs-(?:addition|deletion)/);
   });
   it("marks search terms in prose", () => {
     const out = renderProse("hello world", ["world"]);
